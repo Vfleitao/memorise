@@ -1,9 +1,72 @@
 ﻿using System.Diagnostics;
 using Grpc.Core;
+using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
 using Memorize;
 
 namespace MemorizeIntegrationTests;
+
+/// <summary>
+/// Interceptor that adds the API key header to all requests
+/// </summary>
+public class ApiKeyInterceptor : Interceptor
+{
+    private const string ApiKeyHeader = "x-api-key";
+    private readonly string? _apiKey;
+
+    public ApiKeyInterceptor(string? apiKey)
+    {
+        _apiKey = apiKey;
+    }
+
+    public override AsyncUnaryCall<TResponse> AsyncUnaryCall<TRequest, TResponse>(
+        TRequest request,
+        ClientInterceptorContext<TRequest, TResponse> context,
+        AsyncUnaryCallContinuation<TRequest, TResponse> continuation)
+    {
+        AddApiKeyHeader(ref context);
+        return continuation(request, context);
+    }
+
+    public override AsyncClientStreamingCall<TRequest, TResponse> AsyncClientStreamingCall<TRequest, TResponse>(
+        ClientInterceptorContext<TRequest, TResponse> context,
+        AsyncClientStreamingCallContinuation<TRequest, TResponse> continuation)
+    {
+        AddApiKeyHeader(ref context);
+        return continuation(context);
+    }
+
+    public override AsyncServerStreamingCall<TResponse> AsyncServerStreamingCall<TRequest, TResponse>(
+        TRequest request,
+        ClientInterceptorContext<TRequest, TResponse> context,
+        AsyncServerStreamingCallContinuation<TRequest, TResponse> continuation)
+    {
+        AddApiKeyHeader(ref context);
+        return continuation(request, context);
+    }
+
+    public override AsyncDuplexStreamingCall<TRequest, TResponse> AsyncDuplexStreamingCall<TRequest, TResponse>(
+        ClientInterceptorContext<TRequest, TResponse> context,
+        AsyncDuplexStreamingCallContinuation<TRequest, TResponse> continuation)
+    {
+        AddApiKeyHeader(ref context);
+        return continuation(context);
+    }
+
+    private void AddApiKeyHeader<TRequest, TResponse>(ref ClientInterceptorContext<TRequest, TResponse> context)
+        where TRequest : class
+        where TResponse : class
+    {
+        if (string.IsNullOrEmpty(_apiKey))
+            return;
+
+        var headers = context.Options.Headers ?? new Metadata();
+        headers.Add(ApiKeyHeader, _apiKey);
+        
+        var newOptions = context.Options.WithHeaders(headers);
+        context = new ClientInterceptorContext<TRequest, TResponse>(context.Method, context.Host, newOptions);
+    }
+}
 
 /// <summary>
 /// Integration tests for the Memorize gRPC server.
@@ -13,11 +76,21 @@ public static class Program
 {
     private static readonly string ServerUrl = 
         Environment.GetEnvironmentVariable("MEMORIZE_SERVER_URL") ?? "http://127.0.0.1:50051";
+    
+    private static readonly string? ApiKey = 
+        Environment.GetEnvironmentVariable("MEMORIZE_API_KEY");
+
+    private static Memorize.Memorize.MemorizeClient CreateClient(GrpcChannel channel)
+    {
+        var invoker = channel.Intercept(new ApiKeyInterceptor(ApiKey));
+        return new Memorize.Memorize.MemorizeClient(invoker);
+    }
 
     public static async Task Main(string[] args)
     {
         Console.WriteLine("🧪 Memorize Integration Tests (C#)");
         Console.WriteLine($"   Server: {ServerUrl}");
+        Console.WriteLine($"   Auth: {(string.IsNullOrEmpty(ApiKey) ? "disabled" : "enabled")}");
         Console.WriteLine();
 
         try
@@ -48,7 +121,7 @@ public static class Program
         Console.WriteLine("Test: Basic Operations");
 
         using var channel = GrpcChannel.ForAddress(ServerUrl);
-        var client = new Memorize.Memorize.MemorizeClient(channel);
+        var client = CreateClient(channel);
 
         var testKey = $"basic-test-{Guid.NewGuid()}";
         var testValue = "Hello from C#!";
@@ -64,7 +137,7 @@ public static class Program
 
         // GET
         var getResponse = await client.GetAsync(new GetRequest { Key = testKey });
-        Debug.Assert(getResponse.Found, "GET should find the key");
+        Debug.Assert(getResponse.Value != null, "GET should find the key");
         Debug.Assert(getResponse.Value == testValue, "GET should return correct value");
 
         // CONTAINS
@@ -81,7 +154,7 @@ public static class Program
 
         // Verify deletion
         var getAfterDelete = await client.GetAsync(new GetRequest { Key = testKey });
-        Debug.Assert(!getAfterDelete.Found, "GET after DELETE should not find key");
+        Debug.Assert(getAfterDelete.Value == null, "GET after DELETE should not find key");
 
         Console.WriteLine("   ✓ Basic operations work correctly");
     }
@@ -94,7 +167,7 @@ public static class Program
         Console.WriteLine("Test: Parallel SET/GET (500 concurrent operations)");
 
         using var channel = GrpcChannel.ForAddress(ServerUrl);
-        var client = new Memorize.Memorize.MemorizeClient(channel);
+        var client = CreateClient(channel);
 
         const int operationCount = 500;
         var testData = Enumerable.Range(0, operationCount)
@@ -122,7 +195,7 @@ public static class Program
         var getTasks = testData.Select(async item =>
         {
             var response = await client.GetAsync(new GetRequest { Key = item.Key });
-            if (!response.Found)
+            if (response.Value == null)
             {
                 lock (verificationErrors)
                     verificationErrors.Add($"Key '{item.Key}' not found");
@@ -163,7 +236,7 @@ public static class Program
         Console.WriteLine("Test: Data Isolation (concurrent writes to different keys)");
 
         using var channel = GrpcChannel.ForAddress(ServerUrl);
-        var client = new Memorize.Memorize.MemorizeClient(channel);
+        var client = CreateClient(channel);
 
         const int clientCount = 50;
         const int keysPerClient = 20;
@@ -202,20 +275,16 @@ public static class Program
             clientKeys.Select(async item =>
             {
                 var response = await client.GetAsync(new GetRequest { Key = item.Key });
-                if (!response.Found)
+                if (response.Value == null)
                 {
                     lock (verificationErrors)
                         verificationErrors.Add($"Key '{item.Key}' not found");
                 }
-                else
+                else if (response.Value != item.Value)
                 {
-                    var actualValue = response.Value;
-                    if (actualValue != item.Value)
-                    {
-                        lock (verificationErrors)
-                            verificationErrors.Add(
-                                $"DATA ISOLATION VIOLATION! Key '{item.Key}' expected '{item.Value}' but got '{actualValue}'");
-                    }
+                    lock (verificationErrors)
+                        verificationErrors.Add(
+                            $"DATA ISOLATION VIOLATION! Key '{item.Key}' expected '{item.Value}' but got '{response.Value}'");
                 }
             }));
         await Task.WhenAll(readTasks);
@@ -242,7 +311,7 @@ public static class Program
         Console.WriteLine("Test: TTL Expiration");
 
         using var channel = GrpcChannel.ForAddress(ServerUrl);
-        var client = new Memorize.Memorize.MemorizeClient(channel);
+        var client = CreateClient(channel);
 
         var testKey = $"expiration-test-{Guid.NewGuid()}";
 
@@ -256,7 +325,7 @@ public static class Program
 
         // Should exist immediately
         var immediateGet = await client.GetAsync(new GetRequest { Key = testKey });
-        Debug.Assert(immediateGet.Found, "Key should exist immediately after SET");
+        Debug.Assert(immediateGet.Value != null, "Key should exist immediately after SET");
 
         // Wait for expiration
         Console.WriteLine("   Waiting 2 seconds for expiration...");
@@ -264,7 +333,7 @@ public static class Program
 
         // Should be expired now
         var expiredGet = await client.GetAsync(new GetRequest { Key = testKey });
-        Debug.Assert(!expiredGet.Found, "Key should be expired after TTL");
+        Debug.Assert(expiredGet.Value == null, "Key should be expired after TTL");
 
         Console.WriteLine("   ✓ TTL expiration works correctly");
     }
@@ -277,7 +346,7 @@ public static class Program
         Console.WriteLine("Test: Streaming Execute (bi-directional)");
 
         using var channel = GrpcChannel.ForAddress(ServerUrl);
-        var client = new Memorize.Memorize.MemorizeClient(channel);
+        var client = CreateClient(channel);
 
         using var call = client.Execute();
 
@@ -328,7 +397,7 @@ public static class Program
         Debug.Assert(setResponse.Set?.Success is true, "SET should succeed");
 
         Debug.Assert(responses.TryGetValue(getCommandId, out var getResponse), "Should receive GET response");
-        Debug.Assert(getResponse.Get?.Found is true, "GET should find the key");
+        Debug.Assert(getResponse.Get?.Value != null, "GET should find the key");
         Debug.Assert(getResponse.Get?.Value == testValue, "GET should return correct value");
 
         Debug.Assert(responses.TryGetValue(deleteCommandId, out var deleteResponse), "Should receive DELETE response");

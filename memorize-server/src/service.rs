@@ -26,16 +26,8 @@ impl Memorize for MemorizeService {
         let key = &request.get_ref().key;
         tracing::debug!("GET {}", key);
 
-        match self.store.get(key) {
-            Some(value) => Ok(Response::new(GetResponse {
-                value: Some(value),
-                found: true,
-            })),
-            None => Ok(Response::new(GetResponse {
-                value: None,
-                found: false,
-            })),
-        }
+        let value = self.store.get(key);
+        Ok(Response::new(GetResponse { value }))
     }
 
     async fn set(&self, request: Request<SetRequest>) -> Result<Response<SetResponse>, Status> {
@@ -118,16 +110,8 @@ fn process_command(store: &Store, cmd: Command) -> CommandResponse {
 
     let response = match cmd.command {
         Some(memorize_proto::command::Command::Get(req)) => {
-            match store.get(&req.key) {
-                Some(value) => memorize_proto::command_response::Response::Get(GetResponse {
-                    value: Some(value),
-                    found: true,
-                }),
-                None => memorize_proto::command_response::Response::Get(GetResponse {
-                    value: None,
-                    found: false,
-                }),
-            }
+            let value = store.get(&req.key);
+            memorize_proto::command_response::Response::Get(GetResponse { value })
         }
         Some(memorize_proto::command::Command::Set(req)) => {
             store.set(&req.key, &req.value, req.ttl_seconds);

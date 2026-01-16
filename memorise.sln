@@ -1,0 +1,32 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "demo-apps", "demo-apps", "{E6E41649-FDAC-BD04-56DE-992887A5B054}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "memorize-integration-tests-csharp", "memorize-integration-tests-csharp", "{AD805C38-E31A-60B9-8105-2DA7FA8EAEA2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MemorizeIntegrationTests", "demo-apps\memorize-integration-tests-csharp\MemorizeIntegrationTests\MemorizeIntegrationTests.csproj", "{A00E7DCE-1BAA-F83C-3812-195C72849F57}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A00E7DCE-1BAA-F83C-3812-195C72849F57}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A00E7DCE-1BAA-F83C-3812-195C72849F57}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A00E7DCE-1BAA-F83C-3812-195C72849F57}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A00E7DCE-1BAA-F83C-3812-195C72849F57}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{AD805C38-E31A-60B9-8105-2DA7FA8EAEA2} = {E6E41649-FDAC-BD04-56DE-992887A5B054}
+		{A00E7DCE-1BAA-F83C-3812-195C72849F57} = {AD805C38-E31A-60B9-8105-2DA7FA8EAEA2}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {5C162301-6370-4F9C-A75E-678C85142D93}
+	EndGlobalSection
+EndGlobal
