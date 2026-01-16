@@ -61,7 +61,10 @@ async fn test_basic_operations() -> Result<()> {
     let response = client.get(GetRequest { key: key.clone() }).await?;
     let get_response = response.into_inner();
 
-    assert!(get_response.found, "Key should be found");
+    assert!(
+        get_response.value.is_some(),
+        "Key should be found"
+    );
     assert_eq!(
         get_response.value.as_deref(),
         Some(value),
@@ -78,7 +81,7 @@ async fn test_basic_operations() -> Result<()> {
 
     // GET after DELETE
     let response = client.get(GetRequest { key }).await?;
-    assert!(!response.into_inner().found, "Key should not be found after delete");
+    assert!(response.into_inner().value.is_none(), "Key should not be found after delete");
 
     tracing::info!("   ✓ Basic operations work correctly");
     Ok(())
@@ -143,7 +146,7 @@ async fn test_parallel_set_get() -> Result<()> {
                 let response = client.get(GetRequest { key: key.clone() }).await?;
                 let get_response = response.into_inner();
 
-                if !get_response.found {
+                if get_response.value.is_none() {
                     tracing::error!("Key not found: {}", key);
                     errors.fetch_add(1, Ordering::SeqCst);
                 } else if get_response.value.as_deref() != Some(expected_value.as_str()) {
@@ -283,7 +286,7 @@ async fn test_expiration() -> Result<()> {
 
     // Should exist immediately
     let response = client.get(GetRequest { key: key.clone() }).await?;
-    assert!(response.into_inner().found, "Key should exist immediately");
+    assert!(response.into_inner().value.is_some(), "Key should exist immediately");
 
     // Wait for expiration
     tracing::info!("   Waiting 2 seconds for expiration...");
@@ -292,7 +295,7 @@ async fn test_expiration() -> Result<()> {
     // Should be gone
     let response = client.get(GetRequest { key }).await?;
     assert!(
-        !response.into_inner().found,
+        response.into_inner().value.is_none(),
         "Key should be expired after TTL"
     );
 
@@ -374,7 +377,7 @@ async fn test_streaming_execute() -> Result<()> {
     // cmd-2: GET should find the value
     let get_resp = responses.get("cmd-2").expect("cmd-2 response");
     if let Some(memorize_proto::command_response::Response::Get(r)) = &get_resp.response {
-        assert!(r.found, "GET should find key");
+        assert!(r.value.is_some(), "GET should find key");
         assert_eq!(r.value.as_deref(), Some(test_value), "Value should match");
     } else {
         panic!("cmd-2 should be GET response");
@@ -399,7 +402,7 @@ async fn test_streaming_execute() -> Result<()> {
     // cmd-5: GET after delete should not find
     let get_resp2 = responses.get("cmd-5").expect("cmd-5 response");
     if let Some(memorize_proto::command_response::Response::Get(r)) = &get_resp2.response {
-        assert!(!r.found, "GET after DELETE should not find key");
+        assert!(r.value.is_none(), "GET after DELETE should not find key");
     } else {
         panic!("cmd-5 should be GET response");
     }

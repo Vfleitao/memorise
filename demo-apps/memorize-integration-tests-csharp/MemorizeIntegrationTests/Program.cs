@@ -64,7 +64,7 @@ public static class Program
 
         // GET
         var getResponse = await client.GetAsync(new GetRequest { Key = testKey });
-        Debug.Assert(getResponse.Found, "GET should find the key");
+        Debug.Assert(getResponse.Value != null, "GET should find the key");
         Debug.Assert(getResponse.Value == testValue, "GET should return correct value");
 
         // CONTAINS
@@ -81,7 +81,7 @@ public static class Program
 
         // Verify deletion
         var getAfterDelete = await client.GetAsync(new GetRequest { Key = testKey });
-        Debug.Assert(!getAfterDelete.Found, "GET after DELETE should not find key");
+        Debug.Assert(getAfterDelete.Value == null, "GET after DELETE should not find key");
 
         Console.WriteLine("   ✓ Basic operations work correctly");
     }
@@ -122,7 +122,7 @@ public static class Program
         var getTasks = testData.Select(async item =>
         {
             var response = await client.GetAsync(new GetRequest { Key = item.Key });
-            if (!response.Found)
+            if (response.Value == null)
             {
                 lock (verificationErrors)
                     verificationErrors.Add($"Key '{item.Key}' not found");
@@ -202,20 +202,16 @@ public static class Program
             clientKeys.Select(async item =>
             {
                 var response = await client.GetAsync(new GetRequest { Key = item.Key });
-                if (!response.Found)
+                if (response.Value == null)
                 {
                     lock (verificationErrors)
                         verificationErrors.Add($"Key '{item.Key}' not found");
                 }
-                else
+                else if (response.Value != item.Value)
                 {
-                    var actualValue = response.Value;
-                    if (actualValue != item.Value)
-                    {
-                        lock (verificationErrors)
-                            verificationErrors.Add(
-                                $"DATA ISOLATION VIOLATION! Key '{item.Key}' expected '{item.Value}' but got '{actualValue}'");
-                    }
+                    lock (verificationErrors)
+                        verificationErrors.Add(
+                            $"DATA ISOLATION VIOLATION! Key '{item.Key}' expected '{item.Value}' but got '{response.Value}'");
                 }
             }));
         await Task.WhenAll(readTasks);
@@ -256,7 +252,7 @@ public static class Program
 
         // Should exist immediately
         var immediateGet = await client.GetAsync(new GetRequest { Key = testKey });
-        Debug.Assert(immediateGet.Found, "Key should exist immediately after SET");
+        Debug.Assert(immediateGet.Value != null, "Key should exist immediately after SET");
 
         // Wait for expiration
         Console.WriteLine("   Waiting 2 seconds for expiration...");
@@ -264,7 +260,7 @@ public static class Program
 
         // Should be expired now
         var expiredGet = await client.GetAsync(new GetRequest { Key = testKey });
-        Debug.Assert(!expiredGet.Found, "Key should be expired after TTL");
+        Debug.Assert(expiredGet.Value == null, "Key should be expired after TTL");
 
         Console.WriteLine("   ✓ TTL expiration works correctly");
     }
@@ -328,7 +324,7 @@ public static class Program
         Debug.Assert(setResponse.Set?.Success is true, "SET should succeed");
 
         Debug.Assert(responses.TryGetValue(getCommandId, out var getResponse), "Should receive GET response");
-        Debug.Assert(getResponse.Get?.Found is true, "GET should find the key");
+        Debug.Assert(getResponse.Get?.Value != null, "GET should find the key");
         Debug.Assert(getResponse.Get?.Value == testValue, "GET should return correct value");
 
         Debug.Assert(responses.TryGetValue(deleteCommandId, out var deleteResponse), "Should receive DELETE response");

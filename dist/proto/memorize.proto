@@ -31,7 +31,6 @@ message GetRequest {
 
 message GetResponse {
   optional string value = 1;  // None if key doesn't exist or expired
-  bool found = 2;
 }
 
 message SetRequest {
