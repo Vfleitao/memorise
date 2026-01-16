@@ -18,9 +18,6 @@ service Memorize {
   
   // Check if a key exists
   rpc Contains(ContainsRequest) returns (ContainsResponse);
-  
-  // Bi-directional streaming for batch/pipelined operations
-  rpc Execute(stream Command) returns (stream CommandResponse);
 }
 
 // === Unary Request/Response Messages ===
@@ -65,36 +62,4 @@ message ContainsRequest {
 
 message ContainsResponse {
   bool exists = 1;
-}
-
-// === Streaming Command Messages ===
-
-message Command {
-  string id = 1;  // Client-provided ID to correlate responses
-  
-  oneof command {
-    GetRequest get = 2;
-    SetRequest set = 3;
-    DeleteRequest delete = 4;
-    KeysRequest keys = 5;
-    ContainsRequest contains = 6;
-  }
-}
-
-message CommandResponse {
-  string id = 1;  // Correlates to Command.id
-  
-  oneof response {
-    GetResponse get = 2;
-    SetResponse set = 3;
-    DeleteResponse delete = 4;
-    KeysResponse keys = 5;
-    ContainsResponse contains = 6;
-    ErrorResponse error = 7;
-  }
-}
-
-message ErrorResponse {
-  string message = 1;
-  int32 code = 2;
 }
