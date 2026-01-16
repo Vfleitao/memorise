@@ -173,29 +173,40 @@ impl Store {
     /// # Errors
     /// 
     /// Returns `SetError::StorageFull` if the storage limit would be exceeded.
+    /// 
+    /// # Note on Storage Limits
+    /// 
+    /// The storage limit is enforced as a "soft limit" for performance reasons.
+    /// In highly concurrent scenarios, the actual storage may briefly exceed the
+    /// configured limit due to the race between checking the limit and inserting
+    /// the entry. This trade-off avoids holding locks during the entire set operation,
+    /// which would significantly impact throughput.
     pub fn set(&self, key: impl Into<String>, value: impl Into<String>, ttl_seconds: u64) -> Result<(), SetError> {
         let key = key.into();
         let value = value.into();
         let new_entry_size = Self::entry_size(&key, &value);
         
-        // Check if we're updating an existing key (need to account for size difference)
-        let old_entry_size = self.inner.data
-            .get(&key)
-            .map(|entry| Self::entry_size(&key, entry.value().value()))
-            .unwrap_or(0);
-        
-        let size_delta = new_entry_size as isize - old_entry_size as isize;
-        
         // Check storage limit (0 = unlimited)
-        if self.inner.max_storage_bytes > 0 && size_delta > 0 {
-            let current = self.inner.current_size.load(Ordering::Relaxed);
-            let new_size = current.saturating_add(size_delta as usize);
+        // Note: This is a soft limit check - see method documentation for details
+        if self.inner.max_storage_bytes > 0 {
+            // Check if we're updating an existing key (need to account for size difference)
+            let old_entry_size = self.inner.data
+                .get(&key)
+                .map(|entry| Self::entry_size(&key, entry.value().value()))
+                .unwrap_or(0);
             
-            if new_size > self.inner.max_storage_bytes {
-                return Err(SetError::StorageFull {
-                    current_bytes: current,
-                    max_bytes: self.inner.max_storage_bytes,
-                });
+            let size_delta = new_entry_size as isize - old_entry_size as isize;
+            
+            if size_delta > 0 {
+                let current = self.inner.current_size.load(Ordering::Relaxed);
+                let new_size = current.saturating_add(size_delta as usize);
+                
+                if new_size > self.inner.max_storage_bytes {
+                    return Err(SetError::StorageFull {
+                        current_bytes: current,
+                        max_bytes: self.inner.max_storage_bytes,
+                    });
+                }
             }
         }
         
@@ -211,9 +222,18 @@ impl Store {
         
         let expires_at = Instant::now() + Duration::from_secs(safe_ttl);
         let entry = Entry::new(value, expires_at);
-        self.inner.data.insert(key, entry);
         
-        // Update size tracking
+        // Insert and track size change
+        // Note: Size tracking happens after insert, creating a brief window of inaccuracy.
+        // This is acceptable as the limit is a soft limit (see method docs).
+        let old_entry = self.inner.data.insert(key.clone(), entry);
+        
+        // Calculate actual size change based on what was actually replaced
+        let actual_old_size = old_entry
+            .map(|e| Self::entry_size(&key, e.value()))
+            .unwrap_or(0);
+        let size_delta = new_entry_size as isize - actual_old_size as isize;
+        
         if size_delta > 0 {
             self.inner.current_size.fetch_add(size_delta as usize, Ordering::Relaxed);
         } else if size_delta < 0 {
