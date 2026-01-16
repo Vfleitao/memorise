@@ -77,8 +77,6 @@ mod options;
 pub use error::Error;
 pub use options::MemorizeClientOptions;
 
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tonic::metadata::MetadataValue;
 use tonic::service::Interceptor;
 use tonic::transport::Channel;
@@ -117,10 +115,11 @@ type InterceptedClient =
 /// This client handles connection management, authentication, and provides
 /// a simple async API for cache operations.
 ///
-/// The client is thread-safe and can be cloned cheaply (it uses internal Arc).
+/// The client can be cloned cheaply - the underlying gRPC channel is reference-counted
+/// and handles its own connection pooling and concurrency.
 #[derive(Clone)]
 pub struct MemorizeClient {
-    inner: Arc<RwLock<InterceptedClient>>,
+    inner: InterceptedClient,
 }
 
 impl MemorizeClient {
@@ -168,9 +167,7 @@ impl MemorizeClient {
         };
         let client = GrpcClient::with_interceptor(channel, interceptor);
 
-        Ok(Self {
-            inner: Arc::new(RwLock::new(client)),
-        })
+        Ok(Self { inner: client })
     }
 
     /// Store a value in the cache.
@@ -199,7 +196,7 @@ impl MemorizeClient {
         value: impl Into<String>,
         ttl_seconds: Option<u64>,
     ) -> Result<(), Error> {
-        let mut client = self.inner.write().await;
+        let mut client = self.inner.clone();
         client
             .set(SetRequest {
                 key: key.into(),
@@ -232,7 +229,7 @@ impl MemorizeClient {
     /// # }
     /// ```
     pub async fn get(&self, key: impl Into<String>) -> Result<Option<String>, Error> {
-        let mut client = self.inner.write().await;
+        let mut client = self.inner.clone();
         let response = client
             .get(GetRequest { key: key.into() })
             .await
@@ -263,7 +260,7 @@ impl MemorizeClient {
     /// # }
     /// ```
     pub async fn delete(&self, key: impl Into<String>) -> Result<bool, Error> {
-        let mut client = self.inner.write().await;
+        let mut client = self.inner.clone();
         let response = client
             .delete(DeleteRequest { key: key.into() })
             .await
@@ -288,7 +285,7 @@ impl MemorizeClient {
     /// # }
     /// ```
     pub async fn contains(&self, key: impl Into<String>) -> Result<bool, Error> {
-        let mut client = self.inner.write().await;
+        let mut client = self.inner.clone();
         let response = client
             .contains(ContainsRequest { key: key.into() })
             .await
@@ -315,7 +312,7 @@ impl MemorizeClient {
     /// # }
     /// ```
     pub async fn keys(&self, pattern: Option<&str>) -> Result<Vec<String>, Error> {
-        let mut client = self.inner.write().await;
+        let mut client = self.inner.clone();
         let response = client
             .keys(KeysRequest {
                 pattern: pattern.map(|s| s.to_string()),
