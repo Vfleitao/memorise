@@ -344,10 +344,10 @@ Write-Success "  → bin\memorize-server.exe"
 Copy-Item "$($paths.RustTests)\target\$cargoProfile\memorize-integration-tests.exe" "$OutputDir\bin\" -Force
 Write-Success "  → bin\memorize-integration-tests.exe"
 
-# C# integration tests
-$csharpBinary = "$($paths.CSharpTests)\bin\$dotnetConfig\net8.0\memorize-integration-tests-csharp.exe"
-if (Test-Path $csharpBinary) {
-    Copy-Item $csharpBinary "$OutputDir\bin\" -Force
+# C# integration tests (need all runtime dependencies)
+$csharpBuildDir = "$($paths.CSharpTests)\bin\$dotnetConfig\net8.0"
+if (Test-Path "$csharpBuildDir\memorize-integration-tests-csharp.exe") {
+    Copy-Item "$csharpBuildDir\*" "$OutputDir\bin\" -Force -Exclude "*.pdb","*.xml"
     Write-Success "  → bin\memorize-integration-tests-csharp.exe"
 }
 
@@ -380,7 +380,7 @@ if ($ApiKey) {
 Write-Success "  → run-server.ps1"
 
 @'
-# Run the integration tests
+# Run the integration tests (Rust and C#)
 param(
     [string]$ServerUrl = "http://127.0.0.1:50051",
     [string]$ApiKey = ""
@@ -389,8 +389,27 @@ param(
 $env:MEMORIZE_SERVER_URL = $ServerUrl
 if ($ApiKey) { $env:MEMORIZE_API_KEY = $ApiKey }
 
+Write-Host ""
 Write-Host "Running integration tests against $ServerUrl..." -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "=== Rust Integration Tests ===" -ForegroundColor Magenta
 & "$PSScriptRoot\bin\memorize-integration-tests.exe"
+$rustResult = $LASTEXITCODE
+
+Write-Host ""
+Write-Host "=== C# Integration Tests ===" -ForegroundColor Magenta
+& "$PSScriptRoot\bin\memorize-integration-tests-csharp.exe"
+$csharpResult = $LASTEXITCODE
+
+Write-Host ""
+if ($rustResult -eq 0 -and $csharpResult -eq 0) {
+    Write-Host "All integration tests passed!" -ForegroundColor Green
+    exit 0
+} else {
+    Write-Host "Some tests failed!" -ForegroundColor Red
+    exit 1
+}
 '@ | Out-File "$OutputDir\run-tests.ps1" -Encoding UTF8
 Write-Success "  → run-tests.ps1"
 
