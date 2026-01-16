@@ -1,75 +1,70 @@
 # Memorize - Build Output
 
+Built: 2026-01-16 21:54:11
+Configuration: Release
+
 ## Contents
 
-- in/memorize-server.exe - The gRPC server
-- in/memorize-integration-tests.exe - Rust integration tests
-- in/memorize-integration-tests-csharp.exe - C# integration tests  
-- proto/memorize.proto - Protocol Buffer definition (use this for your client)
+| File | Description |
+|------|-------------|
+| `bin/memorize-server.exe` | The gRPC cache server |
+| `bin/memorize-integration-tests.exe` | Rust integration tests |
+| `bin/memorize-integration-tests-csharp.exe` | C# integration tests |
+| `proto/memorize.proto` | Protocol Buffer definition |
+| `nuget/Memorize.Client.*.nupkg` | C# client library NuGet package |
 
 ## Quick Start
 
-1. Start the server:
-   `powershell
-   # Without authentication (development)
-   ./run-server.ps1
-   
-   # With authentication (recommended for production)
-   ./run-server.ps1 -ApiKey "your-secret-key"
-   
-   # Full options:
-   ./run-server.ps1 -Host "0.0.0.0" -Port 50051 -CleanupInterval 120 -ApiKey "your-secret-key"
-   `
+```powershell
+# Start the server
+./run-server.ps1
 
-2. Run the tests (in another terminal):
-   `powershell
-   # Rust tests
-   ./run-tests.ps1
-   # Or with auth:
-   ./run-tests.ps1 -ApiKey "your-secret-key"
-   
-   # C# tests (set env var first if using auth)
-   $env:MEMORIZE_API_KEY = "your-secret-key"
-   ./bin/memorize-integration-tests-csharp.exe
-   `
+# With authentication
+./run-server.ps1 -ApiKey "your-secret-key"
 
-## Using the Proto File
+# In another terminal, run tests
+./run-tests.ps1
+./run-tests.ps1 -ApiKey "your-secret-key"
+```
 
-### C# / .NET
-`xml
-<ItemGroup>
-  <Protobuf Include="proto\memorize.proto" GrpcServices="Client" />
-</ItemGroup>
-`
+## Using the C# Client Library
 
-### Python
-`ash
-python -m grpc_tools.protoc -I./proto --python_out=. --grpc_python_out=. ./proto/memorize.proto
-`
+```powershell
+# Install from local NuGet
+dotnet add package Memorize.Client --source ./nuget
+```
 
-### Node.js
-`ash
-npx grpc-tools protoc --js_out=import_style=commonjs:. --grpc_out=. -I ./proto ./proto/memorize.proto
-`
+```csharp
+using Memorize.Client;
 
-### Go
-`ash
-protoc --go_out=. --go-grpc_out=. -I ./proto ./proto/memorize.proto
-`
+// Basic usage
+using var cache = new MemorizeClient("http://localhost:50051");
+await cache.SetAsync("key", "value", ttlSeconds: 300);
+var value = await cache.GetAsync("key");
+
+// With authentication
+var options = new MemorizeClientOptions 
+{ 
+    ServerUrl = "http://localhost:50051",
+    ApiKey = "your-secret-key"
+};
+using var authCache = new MemorizeClient(options);
+
+// JSON serialization (extension methods)
+await cache.SetJsonAsync("user:1", new { Name = "John", Age = 30 });
+var user = await cache.GetJsonAsync<User>("user:1");
+
+// Cache-aside pattern
+var data = await cache.GetOrSetAsync("expensive-key", async () => {
+    return await LoadFromDatabaseAsync();
+}, ttlSeconds: 600);
+```
 
 ## Server Configuration
 
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
-| MEMORIZE_HOST | 127.0.0.1 | Bind address |
-| MEMORIZE_PORT | 50051 | Port number |
-| MEMORIZE_CLEANUP_INTERVAL | 60 | Cleanup interval in seconds |
-| MEMORIZE_API_KEY | (none) | API key for authentication (if not set, auth is disabled) |
-
-## Authentication
-
-When MEMORIZE_API_KEY is set, all clients must include the x-api-key header with the matching value.
-If not set, authentication is disabled and all requests are allowed.
-
-Built: 2026-01-16 20:18:44
-Configuration: Release
+| `MEMORIZE_HOST` | 127.0.0.1 | Bind address |
+| `MEMORIZE_PORT` | 50051 | Port number |
+| `MEMORIZE_CLEANUP_INTERVAL` | 60 | Cleanup interval (seconds) |
+| `MEMORIZE_API_KEY` | (none) | API key (if unset, auth disabled) |

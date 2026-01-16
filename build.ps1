@@ -1,11 +1,18 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Build script for Memorize - outputs all artifacts needed for demos.
+    Build script for Memorize - a high-performance in-memory cache with gRPC API.
 
 .DESCRIPTION
-    This script builds the Rust projects and copies all necessary files
-    to an output directory for use by demo applications in any language.
+    This script performs the following steps:
+    1. Build Core       - Builds the memorize-core library
+    2. Build Proto      - Builds the memorize-proto library
+    3. Build Server     - Builds the memorize-server gRPC API
+    4. Run Tests        - Runs all Rust unit tests
+    5. Distribute Proto - Copies .proto file to all locations that need it
+    6. Build Apps       - Builds demo/integration test applications
+    7. Build Bindings   - Builds language bindings (C#) and packages
+    8. Package          - Copies all artifacts to the output directory
 
 .PARAMETER Configuration
     Build configuration: Debug or Release. Default is Release.
@@ -13,49 +20,117 @@
 .PARAMETER OutputDir
     Output directory for artifacts. Default is ./dist
 
+.PARAMETER SkipTests
+    Skip running unit tests.
+
 .EXAMPLE
     ./build.ps1
     ./build.ps1 -Configuration Debug
     ./build.ps1 -Configuration Release -OutputDir ./artifacts
+    ./build.ps1 -SkipTests
 #>
 
 param(
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release",
     
-    [string]$OutputDir = "./dist"
+    [string]$OutputDir = "./dist",
+    
+    [switch]$SkipTests
 )
 
 $ErrorActionPreference = "Stop"
 
-# Colors for output
-function Write-Step { param($Message) Write-Host "▶ $Message" -ForegroundColor Cyan }
-function Write-Success { param($Message) Write-Host "✓ $Message" -ForegroundColor Green }
-function Write-Error { param($Message) Write-Host "✗ $Message" -ForegroundColor Red }
+#═══════════════════════════════════════════════════════════════════════════════
+#region HELPER FUNCTIONS
+#═══════════════════════════════════════════════════════════════════════════════
 
-# Banner
-Write-Host ""
-Write-Host "╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Magenta
-Write-Host "║                    Memorize Build Script                  ║" -ForegroundColor Magenta
-Write-Host "╚═══════════════════════════════════════════════════════════╝" -ForegroundColor Magenta
-Write-Host ""
+function Write-Banner { 
+    param($Message) 
+    Write-Host ""
+    Write-Host "╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Magenta
+    Write-Host "║  $($Message.PadRight(55))  ║" -ForegroundColor Magenta
+    Write-Host "╚═══════════════════════════════════════════════════════════╝" -ForegroundColor Magenta
+    Write-Host ""
+}
+
+function Write-Section { 
+    param($Number, $Title) 
+    Write-Host ""
+    Write-Host "═══════════════════════════════════════════════════════════════" -ForegroundColor Blue
+    Write-Host " STEP $Number : $Title" -ForegroundColor Blue
+    Write-Host "═══════════════════════════════════════════════════════════════" -ForegroundColor Blue
+}
+
+function Write-Step { param($Message) Write-Host "  ▶ $Message" -ForegroundColor Cyan }
+function Write-Success { param($Message) Write-Host "  ✓ $Message" -ForegroundColor Green }
+function Write-Warning { param($Message) Write-Host "  ⚠ $Message" -ForegroundColor Yellow }
+function Write-Err { param($Message) Write-Host "  ✗ $Message" -ForegroundColor Red }
+
+function Invoke-BuildStep {
+    param(
+        [string]$Name,
+        [scriptblock]$Action
+    )
+    Write-Step $Name
+    try {
+        & $Action
+        if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
+        Write-Success $Name
+    }
+    catch {
+        Write-Err "Failed: $Name"
+        Write-Host "    $_" -ForegroundColor Red
+        exit 1
+    }
+}
+
+#endregion
+
+#═══════════════════════════════════════════════════════════════════════════════
+#region CONFIGURATION
+#═══════════════════════════════════════════════════════════════════════════════
 
 $rootDir = $PSScriptRoot
 $cargoProfile = if ($Configuration -eq "Release") { "release" } else { "debug" }
 $cargoFlag = if ($Configuration -eq "Release") { "--release" } else { "" }
-
-# Resolve output directory
+$dotnetConfig = if ($Configuration -eq "Release") { "Release" } else { "Debug" }
 $OutputDir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($rootDir, $OutputDir))
+
+# Project paths
+$paths = @{
+    # Core Rust projects
+    Core        = "$rootDir\memorize-core"
+    Proto       = "$rootDir\memorize-proto"
+    Server      = "$rootDir\memorize-server"
+    
+    # Language bindings - Rust
+    RustClient  = "$rootDir\bindings\rust\memorize-client"
+    RustTests   = "$rootDir\bindings\rust\memorize-integration-tests"
+    
+    # Language bindings - C#
+    CSharpClient = "$rootDir\bindings\csharp\Memorize.Client"
+    CSharpTests  = "$rootDir\bindings\csharp\Memorize.IntegrationTests"
+}
+
+# Proto file source
+$protoSource = "$($paths.Proto)\proto\memorize.proto"
+
+#endregion
+
+Write-Banner "Memorize Build Script"
 
 Write-Host "Configuration: $Configuration" -ForegroundColor Yellow
 Write-Host "Output Dir:    $OutputDir" -ForegroundColor Yellow
-Write-Host ""
 
-# Step 1: Find or set PROTOC
+#═══════════════════════════════════════════════════════════════════════════════
+#region PREREQUISITES
+#═══════════════════════════════════════════════════════════════════════════════
+
+Write-Section 0 "Prerequisites"
+
 Write-Step "Locating protoc compiler..."
-
 if (-not $env:PROTOC) {
-    # Try common locations
     $protocPaths = @(
         "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Google.Protobuf_Microsoft.Winget.Source_8wekyb3d8bbwe\bin\protoc.exe",
         "$env:ProgramFiles\protoc\bin\protoc.exe",
@@ -70,148 +145,241 @@ if (-not $env:PROTOC) {
         }
     }
     
-    # Try PATH
     if (-not $env:PROTOC) {
         $protoc = Get-Command protoc -ErrorAction SilentlyContinue
-        if ($protoc) {
-            $env:PROTOC = $protoc.Source
-        }
+        if ($protoc) { $env:PROTOC = $protoc.Source }
     }
 }
 
 if (-not $env:PROTOC -or -not (Test-Path $env:PROTOC)) {
-    Write-Error "protoc not found! Please install it:"
-    Write-Host "  winget install Google.Protobuf" -ForegroundColor Yellow
+    Write-Err "protoc not found! Install with: winget install Google.Protobuf"
     exit 1
 }
-
 Write-Success "Found protoc: $env:PROTOC"
 
-# Step 2: Build Rust projects
-Write-Step "Building memorize-core..."
-Push-Location "$rootDir\memorize-core"
-cargo build $cargoFlag
-if ($LASTEXITCODE -ne 0) { Write-Error "Failed to build memorize-core"; exit 1 }
-Pop-Location
-Write-Success "memorize-core built"
+#endregion
 
-Write-Step "Building memorize-proto..."
-Push-Location "$rootDir\memorize-proto"
-cargo build $cargoFlag
-if ($LASTEXITCODE -ne 0) { Write-Error "Failed to build memorize-proto"; exit 1 }
-Pop-Location
-Write-Success "memorize-proto built"
+#═══════════════════════════════════════════════════════════════════════════════
+#region STEP 1: BUILD CORE
+#═══════════════════════════════════════════════════════════════════════════════
 
-Write-Step "Building memorize-server..."
-Push-Location "$rootDir\memorize-server"
-cargo build $cargoFlag
-if ($LASTEXITCODE -ne 0) { Write-Error "Failed to build memorize-server"; exit 1 }
-Pop-Location
-Write-Success "memorize-server built"
+Write-Section 1 "Build Core Library"
 
-Write-Step "Building integration tests (Rust)..."
-Push-Location "$rootDir\demo-apps\memorize-integration-tests"
-cargo build $cargoFlag
-if ($LASTEXITCODE -ne 0) { Write-Error "Failed to build integration tests"; exit 1 }
-Pop-Location
-Write-Success "Rust integration tests built"
+Invoke-BuildStep "memorize-core (in-memory storage engine)" {
+    Push-Location $paths.Core
+    cargo build $cargoFlag
+    Pop-Location
+}
 
-# Step 3: Run tests
-Write-Step "Running unit tests..."
-Push-Location "$rootDir\memorize-core"
-cargo test $cargoFlag
-if ($LASTEXITCODE -ne 0) { Write-Error "Unit tests failed"; exit 1 }
-Pop-Location
-Write-Success "All unit tests passed"
+#endregion
 
-# Step 4: Create output directory structure
-Write-Step "Creating output directory..."
+#═══════════════════════════════════════════════════════════════════════════════
+#region STEP 2: BUILD PROTO
+#═══════════════════════════════════════════════════════════════════════════════
 
-$dirs = @(
-    "$OutputDir",
-    "$OutputDir\bin",
-    "$OutputDir\proto",
-    "$OutputDir\include"
-)
+Write-Section 2 "Build Proto Library"
 
+Invoke-BuildStep "memorize-proto (gRPC protocol definitions)" {
+    Push-Location $paths.Proto
+    cargo build $cargoFlag
+    Pop-Location
+}
+
+#endregion
+
+#═══════════════════════════════════════════════════════════════════════════════
+#region STEP 3: BUILD SERVER
+#═══════════════════════════════════════════════════════════════════════════════
+
+Write-Section 3 "Build Server (gRPC API)"
+
+Invoke-BuildStep "memorize-server (gRPC server)" {
+    Push-Location $paths.Server
+    cargo build $cargoFlag
+    Pop-Location
+}
+
+#endregion
+
+#═══════════════════════════════════════════════════════════════════════════════
+#region STEP 4: RUN TESTS
+#═══════════════════════════════════════════════════════════════════════════════
+
+Write-Section 4 "Run Rust Unit Tests"
+
+if ($SkipTests) {
+    Write-Warning "Skipping tests (-SkipTests flag)"
+} else {
+    Invoke-BuildStep "memorize-core unit tests" {
+        Push-Location $paths.Core
+        cargo test $cargoFlag
+        Pop-Location
+    }
+    
+    Invoke-BuildStep "memorize-server unit tests" {
+        Push-Location $paths.Server
+        cargo test $cargoFlag
+        Pop-Location
+    }
+}
+
+#endregion
+
+#═══════════════════════════════════════════════════════════════════════════════
+#region STEP 5: DISTRIBUTE PROTO
+#═══════════════════════════════════════════════════════════════════════════════
+
+Write-Section 5 "Distribute Proto Files"
+
+# Ensure output directories exist
+$dirs = @("$OutputDir", "$OutputDir\bin", "$OutputDir\proto", "$OutputDir\nuget")
 foreach ($dir in $dirs) {
     if (-not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
 }
-Write-Success "Output directory created: $OutputDir"
 
-# Step 5: Copy artifacts
-Write-Step "Copying artifacts..."
+Write-Step "Copying memorize.proto to distribution locations..."
 
-# Server binary
-$serverBinary = "$rootDir\memorize-server\target\$cargoProfile\memorize-server.exe"
-Copy-Item $serverBinary "$OutputDir\bin\memorize-server.exe" -Force
-Write-Success "Copied: memorize-server.exe"
+# Copy to dist output
+Copy-Item $protoSource "$OutputDir\proto\memorize.proto" -Force
+Write-Success "  → $OutputDir\proto\"
 
-# Integration test binary
-$testBinary = "$rootDir\demo-apps\memorize-integration-tests\target\$cargoProfile\memorize-integration-tests.exe"
-Copy-Item $testBinary "$OutputDir\bin\memorize-integration-tests.exe" -Force
-Write-Success "Copied: memorize-integration-tests.exe"
-
-# Proto file
-Copy-Item "$rootDir\memorize-proto\proto\memorize.proto" "$OutputDir\proto\memorize.proto" -Force
-Write-Success "Copied: memorize.proto"
-
-# Step 5b: Build C# integration tests
-Write-Step "Building C# integration tests..."
-$csharpProjectDir = "$rootDir\demo-apps\memorize-integration-tests-csharp\MemorizeIntegrationTests"
-$csharpProtosDir = "$csharpProjectDir\Protos"
-
-# Ensure proto file is synced to C# project
+# Copy to C# bindings
+$csharpProtosDir = "$($paths.CSharpClient)\Protos"
 if (-not (Test-Path $csharpProtosDir)) {
     New-Item -ItemType Directory -Path $csharpProtosDir -Force | Out-Null
 }
-Copy-Item "$OutputDir\proto\memorize.proto" "$csharpProtosDir\memorize.proto" -Force
+Copy-Item $protoSource "$csharpProtosDir\memorize.proto" -Force
+Write-Success "  → bindings\csharp\Memorize.Client\Protos\"
 
-$dotnetConfig = if ($Configuration -eq "Release") { "Release" } else { "Debug" }
-Push-Location $csharpProjectDir
-dotnet build --configuration $dotnetConfig
-if ($LASTEXITCODE -ne 0) { Write-Error "Failed to build C# integration tests"; exit 1 }
-Pop-Location
-Write-Success "C# integration tests built"
+# Copy to Rust bindings
+$rustProtosDir = "$($paths.RustClient)\proto"
+if (-not (Test-Path $rustProtosDir)) {
+    New-Item -ItemType Directory -Path $rustProtosDir -Force | Out-Null
+}
+Copy-Item $protoSource "$rustProtosDir\memorize.proto" -Force
+Write-Success "  → bindings\rust\memorize-client\proto\"
 
-# Copy C# binary
-$csharpBinary = "$csharpProjectDir\bin\$dotnetConfig\net8.0\MemorizeIntegrationTests.exe"
-if (Test-Path $csharpBinary) {
-    Copy-Item $csharpBinary "$OutputDir\bin\memorize-integration-tests-csharp.exe" -Force
-    Write-Success "Copied: memorize-integration-tests-csharp.exe"
+# Future: Copy to other language bindings here
+# Copy-Item $protoSource "$($paths.PythonClient)\protos\memorize.proto" -Force
+# Copy-Item $protoSource "$($paths.GoClient)\proto\memorize.proto" -Force
+
+#endregion
+
+#═══════════════════════════════════════════════════════════════════════════════
+#region STEP 6: BUILD BINDINGS
+#═══════════════════════════════════════════════════════════════════════════════
+
+Write-Section 6 "Build Language Bindings"
+
+#───────────────────────────────────────────────────────────────────────────────
+# Rust Bindings
+#───────────────────────────────────────────────────────────────────────────────
+Write-Host "  ── Rust ──" -ForegroundColor DarkCyan
+
+Invoke-BuildStep "memorize-client (Cargo crate)" {
+    Push-Location $paths.RustClient
+    cargo build $cargoFlag
+    Pop-Location
 }
 
-# Step 6: Generate a run script
+Invoke-BuildStep "memorize-integration-tests" {
+    Push-Location $paths.RustTests
+    cargo build $cargoFlag
+    Pop-Location
+}
+
+#───────────────────────────────────────────────────────────────────────────────
+# C# Bindings
+#───────────────────────────────────────────────────────────────────────────────
+Write-Host "  ── C# ──" -ForegroundColor DarkCyan
+
+Invoke-BuildStep "Memorize.Client (NuGet library)" {
+    Push-Location $paths.CSharpClient
+    dotnet build --configuration $dotnetConfig
+    Pop-Location
+}
+
+Invoke-BuildStep "Memorize.IntegrationTests" {
+    Push-Location $paths.CSharpTests
+    dotnet build --configuration $dotnetConfig
+    Pop-Location
+}
+
+Invoke-BuildStep "NuGet package" {
+    Push-Location $paths.CSharpClient
+    dotnet pack --configuration $dotnetConfig --output "$OutputDir\nuget" --no-build
+    Pop-Location
+}
+
+# Future: Add more language bindings here
+#───────────────────────────────────────────────────────────────────────────────
+# Python Bindings (placeholder)
+#───────────────────────────────────────────────────────────────────────────────
+# Write-Host "  ── Python ──" -ForegroundColor DarkCyan
+# Invoke-BuildStep "memorize-py" { ... }
+
+#───────────────────────────────────────────────────────────────────────────────
+# Go Bindings (placeholder)
+#───────────────────────────────────────────────────────────────────────────────
+# Write-Host "  ── Go ──" -ForegroundColor DarkCyan
+# Invoke-BuildStep "memorize-go" { ... }
+
+#endregion
+
+#═══════════════════════════════════════════════════════════════════════════════
+#region STEP 7: PACKAGE ARTIFACTS
+#═══════════════════════════════════════════════════════════════════════════════
+
+Write-Section 7 "Package Artifacts"
+
+Write-Step "Copying binaries to dist..."
+
+# Server binary
+Copy-Item "$($paths.Server)\target\$cargoProfile\memorize-server.exe" "$OutputDir\bin\" -Force
+Write-Success "  → bin\memorize-server.exe"
+
+# Rust integration tests
+Copy-Item "$($paths.RustTests)\target\$cargoProfile\memorize-integration-tests.exe" "$OutputDir\bin\" -Force
+Write-Success "  → bin\memorize-integration-tests.exe"
+
+# C# integration tests
+$csharpBinary = "$($paths.CSharpTests)\bin\$dotnetConfig\net8.0\memorize-integration-tests-csharp.exe"
+if (Test-Path $csharpBinary) {
+    Copy-Item $csharpBinary "$OutputDir\bin\" -Force
+    Write-Success "  → bin\memorize-integration-tests-csharp.exe"
+}
+
+#───────────────────────────────────────────────────────────────────────────────
+# Generate helper scripts
+#───────────────────────────────────────────────────────────────────────────────
 Write-Step "Generating helper scripts..."
 
-$runServerScript = @'
+@'
 # Run the Memorize server
 param(
-    [string]$Host = "127.0.0.1",
+    [string]$ServerHost = "127.0.0.1",
     [int]$Port = 50051,
     [int]$CleanupInterval = 60,
     [string]$ApiKey = ""
 )
 
-$env:MEMORIZE_HOST = $Host
+$env:MEMORIZE_HOST = $ServerHost
 $env:MEMORIZE_PORT = $Port
 $env:MEMORIZE_CLEANUP_INTERVAL = $CleanupInterval
 if ($ApiKey) {
     $env:MEMORIZE_API_KEY = $ApiKey
-    Write-Host "Starting Memorize server on ${Host}:${Port} (auth enabled)..." -ForegroundColor Cyan
+    Write-Host "Starting Memorize server on ${ServerHost}:${Port} (auth enabled)..." -ForegroundColor Cyan
 } else {
     Remove-Item Env:MEMORIZE_API_KEY -ErrorAction SilentlyContinue
-    Write-Host "Starting Memorize server on ${Host}:${Port} (auth disabled)..." -ForegroundColor Yellow
+    Write-Host "Starting Memorize server on ${ServerHost}:${Port} (auth disabled)..." -ForegroundColor Yellow
 }
 & "$PSScriptRoot\bin\memorize-server.exe"
-'@
+'@ | Out-File "$OutputDir\run-server.ps1" -Encoding UTF8
+Write-Success "  → run-server.ps1"
 
-$runServerScript | Out-File "$OutputDir\run-server.ps1" -Encoding UTF8
-Write-Success "Created: run-server.ps1"
-
-$runTestsScript = @'
+@'
 # Run the integration tests
 param(
     [string]$ServerUrl = "http://127.0.0.1:50051",
@@ -219,111 +387,118 @@ param(
 )
 
 $env:MEMORIZE_SERVER_URL = $ServerUrl
-if ($ApiKey) {
-    $env:MEMORIZE_API_KEY = $ApiKey
-}
+if ($ApiKey) { $env:MEMORIZE_API_KEY = $ApiKey }
 
 Write-Host "Running integration tests against $ServerUrl..." -ForegroundColor Cyan
 & "$PSScriptRoot\bin\memorize-integration-tests.exe"
-'@
+'@ | Out-File "$OutputDir\run-tests.ps1" -Encoding UTF8
+Write-Success "  → run-tests.ps1"
 
-$runTestsScript | Out-File "$OutputDir\run-tests.ps1" -Encoding UTF8
-Write-Success "Created: run-tests.ps1"
-
-# Step 7: Create README
-$readme = @"
+#───────────────────────────────────────────────────────────────────────────────
+# Generate README
+#───────────────────────────────────────────────────────────────────────────────
+Write-Step "Generating README..."
+@"
 # Memorize - Build Output
+
+Built: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+Configuration: $Configuration
 
 ## Contents
 
-- `bin/memorize-server.exe` - The gRPC server
-- `bin/memorize-integration-tests.exe` - Rust integration tests
-- `bin/memorize-integration-tests-csharp.exe` - C# integration tests  
-- `proto/memorize.proto` - Protocol Buffer definition (use this for your client)
+| File | Description |
+|------|-------------|
+| ``bin/memorize-server.exe`` | The gRPC cache server |
+| ``bin/memorize-integration-tests.exe`` | Rust integration tests |
+| ``bin/memorize-integration-tests-csharp.exe`` | C# integration tests |
+| ``proto/memorize.proto`` | Protocol Buffer definition |
+| ``nuget/Memorize.Client.*.nupkg`` | C# client library NuGet package |
 
 ## Quick Start
 
-1. Start the server:
-   ```powershell
-   # Without authentication (development)
-   ./run-server.ps1
-   
-   # With authentication (recommended for production)
-   ./run-server.ps1 -ApiKey "your-secret-key"
-   
-   # Full options:
-   ./run-server.ps1 -Host "0.0.0.0" -Port 50051 -CleanupInterval 120 -ApiKey "your-secret-key"
-   ```
+``````powershell
+# Start the server
+./run-server.ps1
 
-2. Run the tests (in another terminal):
-   ```powershell
-   # Rust tests
-   ./run-tests.ps1
-   # Or with auth:
-   ./run-tests.ps1 -ApiKey "your-secret-key"
-   
-   # C# tests (set env var first if using auth)
-   `$env:MEMORIZE_API_KEY = "your-secret-key"
-   ./bin/memorize-integration-tests-csharp.exe
-   ```
+# With authentication
+./run-server.ps1 -ApiKey "your-secret-key"
 
-## Using the Proto File
+# In another terminal, run tests
+./run-tests.ps1
+./run-tests.ps1 -ApiKey "your-secret-key"
+``````
 
-### C# / .NET
-```xml
-<ItemGroup>
-  <Protobuf Include="proto\memorize.proto" GrpcServices="Client" />
-</ItemGroup>
-```
+## Using the C# Client Library
 
-### Python
-```bash
-python -m grpc_tools.protoc -I./proto --python_out=. --grpc_python_out=. ./proto/memorize.proto
-```
+``````powershell
+# Install from local NuGet
+dotnet add package Memorize.Client --source ./nuget
+``````
 
-### Node.js
-```bash
-npx grpc-tools protoc --js_out=import_style=commonjs:. --grpc_out=. -I ./proto ./proto/memorize.proto
-```
+``````csharp
+using Memorize.Client;
 
-### Go
-```bash
-protoc --go_out=. --go-grpc_out=. -I ./proto ./proto/memorize.proto
-```
+// Basic usage
+using var cache = new MemorizeClient("http://localhost:50051");
+await cache.SetAsync("key", "value", ttlSeconds: 300);
+var value = await cache.GetAsync("key");
+
+// With authentication
+var options = new MemorizeClientOptions 
+{ 
+    ServerUrl = "http://localhost:50051",
+    ApiKey = "your-secret-key"
+};
+using var authCache = new MemorizeClient(options);
+
+// JSON serialization (extension methods)
+await cache.SetJsonAsync("user:1", new { Name = "John", Age = 30 });
+var user = await cache.GetJsonAsync<User>("user:1");
+
+// Cache-aside pattern
+var data = await cache.GetOrSetAsync("expensive-key", async () => {
+    return await LoadFromDatabaseAsync();
+}, ttlSeconds: 600);
+``````
 
 ## Server Configuration
 
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
-| MEMORIZE_HOST | 127.0.0.1 | Bind address |
-| MEMORIZE_PORT | 50051 | Port number |
-| MEMORIZE_CLEANUP_INTERVAL | 60 | Cleanup interval in seconds |
-| MEMORIZE_API_KEY | (none) | API key for authentication (if not set, auth is disabled) |
+| ``MEMORIZE_HOST`` | 127.0.0.1 | Bind address |
+| ``MEMORIZE_PORT`` | 50051 | Port number |
+| ``MEMORIZE_CLEANUP_INTERVAL`` | 60 | Cleanup interval (seconds) |
+| ``MEMORIZE_API_KEY`` | (none) | API key (if unset, auth disabled) |
+"@ | Out-File "$OutputDir\README.md" -Encoding UTF8
+Write-Success "  → README.md"
 
-## Authentication
+#endregion
 
-When `MEMORIZE_API_KEY` is set, all clients must include the `x-api-key` header with the matching value.
-If not set, authentication is disabled and all requests are allowed.
+#═══════════════════════════════════════════════════════════════════════════════
+#region BUILD SUMMARY
+#═══════════════════════════════════════════════════════════════════════════════
 
-Built: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-Configuration: $Configuration
-"@
-
-$readme | Out-File "$OutputDir\README.md" -Encoding UTF8
-Write-Success "Created: README.md"
-
-# Done!
 Write-Host ""
 Write-Host "╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Green
 Write-Host "║                    Build Complete! ✓                      ║" -ForegroundColor Green
 Write-Host "╚═══════════════════════════════════════════════════════════╝" -ForegroundColor Green
 Write-Host ""
-Write-Host "Output directory: $OutputDir" -ForegroundColor Yellow
+Write-Host "Output Directory: $OutputDir" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "Contents:" -ForegroundColor Cyan
-Get-ChildItem $OutputDir -Recurse -File | ForEach-Object {
-    $relativePath = $_.FullName.Substring($OutputDir.Length + 1)
-    $size = "{0:N0} KB" -f ($_.Length / 1KB)
-    Write-Host "  $relativePath ($size)"
-}
+
+$nupkg = Get-ChildItem "$OutputDir\nuget\*.nupkg" -ErrorAction SilentlyContinue | Select-Object -First 1
+
+Write-Host "Artifacts:" -ForegroundColor Cyan
+Write-Host "  bin\"
+Write-Host "    memorize-server.exe"
+Write-Host "    memorize-integration-tests.exe"
+Write-Host "    memorize-integration-tests-csharp.exe"
+Write-Host "  proto\"
+Write-Host "    memorize.proto"
+Write-Host "  nuget\"
+if ($nupkg) { Write-Host "    $($nupkg.Name)" }
 Write-Host ""
+Write-Host "Run './dist/run-server.ps1' to start the server" -ForegroundColor DarkGray
+Write-Host ""
+
+#endregion
