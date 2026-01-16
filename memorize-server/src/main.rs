@@ -1,5 +1,7 @@
+mod auth;
 mod service;
 
+use auth::auth_interceptor;
 use memorize_core::{Store, StoreConfig};
 use memorize_proto::memorize_server::MemorizeServer;
 use service::MemorizeService;
@@ -25,6 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "60".to_string())
         .parse()
         .unwrap_or(60);
+    let api_key = std::env::var("MEMORIZE_API_KEY").ok();
 
     let addr = format!("{}:{}", host, port).parse()?;
 
@@ -37,9 +40,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("🚀 Memorize gRPC server listening on {}", addr);
     tracing::info!("   Cleanup interval: {}s", cleanup_interval);
+    if api_key.is_some() {
+        tracing::info!("   Authentication: enabled (API key required)");
+    } else {
+        tracing::warn!("   Authentication: disabled (MEMORIZE_API_KEY not set)");
+    }
+
+    let service_with_auth = MemorizeServer::with_interceptor(service, auth_interceptor(api_key));
 
     Server::builder()
-        .add_service(MemorizeServer::new(service))
+        .add_service(service_with_auth)
         .serve(addr)
         .await?;
 
