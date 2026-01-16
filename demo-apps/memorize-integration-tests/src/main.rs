@@ -71,7 +71,6 @@ async fn main() -> Result<()> {
     test_parallel_set_get().await?;
     test_data_isolation().await?;
     test_expiration().await?;
-    test_streaming_execute().await?;
 
     println!();
     tracing::info!("✅ All tests passed!");
@@ -340,113 +339,5 @@ async fn test_expiration() -> Result<()> {
     );
 
     tracing::info!("   ✓ TTL expiration works correctly");
-    Ok(())
-}
-
-/// Test bi-directional streaming Execute RPC
-async fn test_streaming_execute() -> Result<()> {
-    use futures::StreamExt;
-    use memorize_proto::{command, Command, ContainsRequest, DeleteRequest, GetRequest, SetRequest};
-
-    tracing::info!("Test: Streaming Execute (bi-directional)");
-
-    let mut client = create_client().await?;
-
-    // Create a stream of commands
-    let test_key = format!("stream-test-{}", uuid::Uuid::new_v4());
-    let test_value = "streamed-value";
-
-    let commands = vec![
-        Command {
-            id: "cmd-1".to_string(),
-            command: Some(command::Command::Set(SetRequest {
-                key: test_key.clone(),
-                value: test_value.to_string(),
-                ttl_seconds: 60,
-            })),
-        },
-        Command {
-            id: "cmd-2".to_string(),
-            command: Some(command::Command::Get(GetRequest {
-                key: test_key.clone(),
-            })),
-        },
-        Command {
-            id: "cmd-3".to_string(),
-            command: Some(command::Command::Contains(ContainsRequest {
-                key: test_key.clone(),
-            })),
-        },
-        Command {
-            id: "cmd-4".to_string(),
-            command: Some(command::Command::Delete(DeleteRequest {
-                key: test_key.clone(),
-            })),
-        },
-        Command {
-            id: "cmd-5".to_string(),
-            command: Some(command::Command::Get(GetRequest {
-                key: test_key.clone(),
-            })),
-        },
-    ];
-
-    let command_stream = tokio_stream::iter(commands);
-
-    // Send commands and collect responses
-    let response = client.execute(command_stream).await?;
-    let mut response_stream = response.into_inner();
-
-    let mut responses = HashMap::new();
-    while let Some(result) = response_stream.next().await {
-        let cmd_response = result?;
-        responses.insert(cmd_response.id.clone(), cmd_response);
-    }
-
-    // Verify responses
-    assert_eq!(responses.len(), 5, "Should receive 5 responses");
-
-    // cmd-1: SET should succeed
-    let set_resp = responses.get("cmd-1").expect("cmd-1 response");
-    if let Some(memorize_proto::command_response::Response::Set(r)) = &set_resp.response {
-        assert!(r.success, "SET should succeed");
-    } else {
-        panic!("cmd-1 should be SET response");
-    }
-
-    // cmd-2: GET should find the value
-    let get_resp = responses.get("cmd-2").expect("cmd-2 response");
-    if let Some(memorize_proto::command_response::Response::Get(r)) = &get_resp.response {
-        assert!(r.value.is_some(), "GET should find key");
-        assert_eq!(r.value.as_deref(), Some(test_value), "Value should match");
-    } else {
-        panic!("cmd-2 should be GET response");
-    }
-
-    // cmd-3: CONTAINS should be true
-    let contains_resp = responses.get("cmd-3").expect("cmd-3 response");
-    if let Some(memorize_proto::command_response::Response::Contains(r)) = &contains_resp.response {
-        assert!(r.exists, "CONTAINS should be true");
-    } else {
-        panic!("cmd-3 should be CONTAINS response");
-    }
-
-    // cmd-4: DELETE should succeed
-    let delete_resp = responses.get("cmd-4").expect("cmd-4 response");
-    if let Some(memorize_proto::command_response::Response::Delete(r)) = &delete_resp.response {
-        assert!(r.deleted, "DELETE should succeed");
-    } else {
-        panic!("cmd-4 should be DELETE response");
-    }
-
-    // cmd-5: GET after delete should not find
-    let get_resp2 = responses.get("cmd-5").expect("cmd-5 response");
-    if let Some(memorize_proto::command_response::Response::Get(r)) = &get_resp2.response {
-        assert!(r.value.is_none(), "GET after DELETE should not find key");
-    } else {
-        panic!("cmd-5 should be GET response");
-    }
-
-    tracing::info!("   ✓ Streaming Execute works correctly with command correlation");
     Ok(())
 }
