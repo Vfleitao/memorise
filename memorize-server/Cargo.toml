@@ -1,0 +1,13 @@
+[package]
+name = "memorize-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+memorize-core = { path = "../memorize-core" }
+memorize-proto = { path = "../memorize-proto" }
+tokio = { version = "1", features = ["full"] }
+tonic = "0.12"
+tokio-stream = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

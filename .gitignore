@@ -24,3 +24,21 @@ Thumbs.db
 # Environment
 .env
 .env.local
+# .NET / C#
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+*.user
+*.userosscache
+*.suo
+*.cache
+*.log
+*.vspscc
+*.vssscc
+.vs/
+*.nupkg
+project.lock.json
+*.nuget.props
+*.nuget.targets
