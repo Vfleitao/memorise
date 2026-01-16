@@ -324,15 +324,15 @@ public static class Program
         }
 
         // Verify responses
-        Debug.Assert(responses.ContainsKey(setCommandId), "Should receive SET response");
-        Debug.Assert(responses[setCommandId].Set?.Success == true, "SET should succeed");
+        Debug.Assert(responses.TryGetValue(setCommandId, out var setResponse), "Should receive SET response");
+        Debug.Assert(setResponse.Set?.Success is true, "SET should succeed");
 
-        Debug.Assert(responses.ContainsKey(getCommandId), "Should receive GET response");
-        Debug.Assert(responses[getCommandId].Get?.Found == true, "GET should find the key");
-        Debug.Assert(responses[getCommandId].Get?.Value == testValue, "GET should return correct value");
+        Debug.Assert(responses.TryGetValue(getCommandId, out var getResponse), "Should receive GET response");
+        Debug.Assert(getResponse.Get?.Found is true, "GET should find the key");
+        Debug.Assert(getResponse.Get?.Value == testValue, "GET should return correct value");
 
-        Debug.Assert(responses.ContainsKey(deleteCommandId), "Should receive DELETE response");
-        Debug.Assert(responses[deleteCommandId].Delete?.Deleted == true, "DELETE should succeed");
+        Debug.Assert(responses.TryGetValue(deleteCommandId, out var deleteResponse), "Should receive DELETE response");
+        Debug.Assert(deleteResponse.Delete?.Deleted is true, "DELETE should succeed");
 
         Console.WriteLine("   ✓ Streaming Execute works correctly with command correlation");
     }
