@@ -3,10 +3,26 @@
 //! Validates requests against the `MEMORIZE_API_KEY` environment variable.
 //! If the environment variable is not set, authentication is disabled.
 
+use subtle::ConstantTimeEq;
 use tonic::{Request, Status};
 
 /// The metadata key for the API key header
 pub const API_KEY_HEADER: &str = "x-api-key";
+
+/// Performs a constant-time comparison of two strings to prevent timing attacks.
+/// Returns true if the strings are equal.
+fn constant_time_compare(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    
+    // Length check is not constant-time, but that's acceptable since
+    // the expected key length is not secret (attacker can see their own requests)
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+    
+    a_bytes.ct_eq(b_bytes).into()
+}
 
 /// Interceptor that validates the API key from request metadata
 pub fn auth_interceptor(
@@ -25,7 +41,7 @@ pub fn auth_interceptor(
                     .to_str()
                     .map_err(|_| Status::unauthenticated("Invalid API key format"))?;
 
-                if provided_key == expected_key {
+                if constant_time_compare(provided_key, expected_key) {
                     Ok(req)
                 } else {
                     tracing::warn!("Invalid API key provided");
@@ -43,6 +59,15 @@ pub fn auth_interceptor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_constant_time_compare() {
+        assert!(constant_time_compare("secret123", "secret123"));
+        assert!(!constant_time_compare("secret123", "secret124"));
+        assert!(!constant_time_compare("secret123", "secret12"));
+        assert!(!constant_time_compare("short", "muchlonger"));
+        assert!(constant_time_compare("", ""));
+    }
 
     #[test]
     fn test_no_api_key_configured_allows_all() {

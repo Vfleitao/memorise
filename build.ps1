@@ -202,7 +202,7 @@ if ($ApiKey) {
     $env:MEMORIZE_API_KEY = $ApiKey
     Write-Host "Starting Memorize server on ${Host}:${Port} (auth enabled)..." -ForegroundColor Cyan
 } else {
-    $env:MEMORIZE_API_KEY = $null
+    Remove-Item Env:MEMORIZE_API_KEY -ErrorAction SilentlyContinue
     Write-Host "Starting Memorize server on ${Host}:${Port} (auth disabled)..." -ForegroundColor Yellow
 }
 & "$PSScriptRoot\bin\memorize-server.exe"
@@ -236,10 +236,10 @@ $readme = @"
 
 ## Contents
 
-- ``bin/memorize-server.exe`` - The gRPC server
-- ``bin/memorize-integration-tests.exe`` - Rust integration tests
-- ``bin/memorize-integration-tests-csharp.exe`` - C# integration tests  
-- ``proto/memorize.proto`` - Protocol Buffer definition (use this for your client)
+- `bin/memorize-server.exe` - The gRPC server
+- `bin/memorize-integration-tests.exe` - Rust integration tests
+- `bin/memorize-integration-tests-csharp.exe` - C# integration tests  
+- `proto/memorize.proto` - Protocol Buffer definition (use this for your client)
 
 ## Quick Start
 
@@ -302,7 +302,7 @@ protoc --go_out=. --go-grpc_out=. -I ./proto ./proto/memorize.proto
 
 ## Authentication
 
-When ``MEMORIZE_API_KEY`` is set, all clients must include the ``x-api-key`` header with the matching value.
+When `MEMORIZE_API_KEY` is set, all clients must include the `x-api-key` header with the matching value.
 If not set, authentication is disabled and all requests are allowed.
 
 Built: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
