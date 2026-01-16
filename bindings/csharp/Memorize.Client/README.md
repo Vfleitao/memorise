@@ -158,6 +158,12 @@ try
 {
     await cache.SetAsync("key", "value");
 }
+catch (StorageFullException ex)
+{
+    // Server has reached its maximum storage limit
+    // Consider evicting old entries or alerting ops
+    _logger.LogError("Cache storage full: {Message}", ex.Message);
+}
 catch (RpcException ex) when (ex.StatusCode == StatusCode.Unavailable)
 {
     // Server not available - handle gracefully
@@ -167,6 +173,35 @@ catch (RpcException ex) when (ex.StatusCode == StatusCode.Unauthenticated)
 {
     // Invalid API key
     throw new InvalidOperationException("Invalid cache API key", ex);
+}
+```
+
+### Storage Full Exception
+
+When the server has reached its configured maximum storage limit (`MEMORIZE_MAX_STORAGE_MB`), `SetAsync` will throw a `StorageFullException`:
+
+```csharp
+try
+{
+    await cache.SetAsync("key", largeValue);
+}
+catch (StorageFullException)
+{
+    // Option 1: Try to free space by deleting old entries
+    await cache.DeleteAsync("old-key");
+    await cache.SetAsync("key", largeValue);
+    
+    // Option 2: Use a smaller TTL to let entries expire faster
+    await cache.SetAsync("key", value, ttlSeconds: 60);
+    
+    // Option 3: Log and continue without caching
+    _logger.LogWarning("Cache full, skipping cache write");
+}
+
+// Extension method for checking
+catch (Exception ex) when (ex.IsStorageFull())
+{
+    // Handle storage full
 }
 ```
 

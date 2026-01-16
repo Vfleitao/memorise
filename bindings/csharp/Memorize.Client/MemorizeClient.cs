@@ -133,15 +133,23 @@ public sealed class MemorizeClient : IDisposable, IAsyncDisposable
     /// <param name="value">The value to store</param>
     /// <param name="ttlSeconds">Time-to-live in seconds (0 = never expire)</param>
     /// <param name="cancellationToken">Cancellation token</param>
+    /// <exception cref="StorageFullException">Thrown when the server's storage capacity is exceeded.</exception>
     public async Task SetAsync(string key, string value, ulong ttlSeconds, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrEmpty(key);
         ArgumentNullException.ThrowIfNull(value);
 
-        await _grpcClient.SetAsync(
-            new Proto.SetRequest { Key = key, Value = value, TtlSeconds = ttlSeconds },
-            cancellationToken: cancellationToken);
+        try
+        {
+            await _grpcClient.SetAsync(
+                new Proto.SetRequest { Key = key, Value = value, TtlSeconds = ttlSeconds },
+                cancellationToken: cancellationToken);
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.ResourceExhausted)
+        {
+            throw new StorageFullException(ex.Status.Detail, ex);
+        }
     }
 
     /// <summary>

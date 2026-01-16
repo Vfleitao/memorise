@@ -177,6 +177,10 @@ impl MemorizeClient {
     /// * `value` - The value to store
     /// * `ttl_seconds` - Optional time-to-live in seconds. If None or Some(0), the entry never expires.
     ///
+    /// # Errors
+    /// * `Error::StorageFull` - Server storage capacity has been exceeded
+    /// * `Error::Grpc` - Other gRPC errors (auth failure, invalid arguments, etc.)
+    ///
     /// # Example
     /// ```rust,no_run
     /// # use memorize_client::MemorizeClient;
@@ -205,7 +209,7 @@ impl MemorizeClient {
                 ttl_seconds: ttl_seconds.unwrap_or(0),
             })
             .await
-            .map_err(Error::from)?;
+            .map_err(|e| Error::from_status(e))?;
         Ok(())
     }
 

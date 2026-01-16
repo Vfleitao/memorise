@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -6,11 +7,43 @@ use tokio::sync::watch;
 use crate::config::StoreConfig;
 use crate::entry::Entry;
 
+/// Error type for set operations
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetError {
+    /// Storage capacity exceeded
+    StorageFull {
+        /// Current storage usage in bytes
+        current_bytes: usize,
+        /// Maximum storage capacity in bytes
+        max_bytes: usize,
+    },
+}
+
+impl std::fmt::Display for SetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SetError::StorageFull { current_bytes, max_bytes } => {
+                write!(
+                    f,
+                    "Storage full: {} bytes used of {} bytes maximum",
+                    current_bytes, max_bytes
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SetError {}
+
 /// Internal shared state for the store
 struct StoreInner {
     data: DashMap<String, Entry>,
     /// Sender to signal shutdown to the cleanup task
     shutdown_tx: watch::Sender<bool>,
+    /// Current total size of stored data in bytes (keys + values)
+    current_size: AtomicUsize,
+    /// Maximum storage size in bytes (0 = unlimited)
+    max_storage_bytes: usize,
 }
 
 /// Thread-safe in-memory key-value store with TTL support
@@ -21,6 +54,11 @@ struct StoreInner {
 /// Each store spawns its own background cleanup task that periodically removes
 /// expired entries. The cleanup task is automatically stopped when the store is dropped.
 /// 
+/// # Storage Limits
+/// 
+/// The store has a configurable maximum storage size (default: 100MB).
+/// When full, new inserts will be rejected with `SetError::StorageFull`.
+/// 
 /// # Example
 /// 
 /// ```rust,no_run
@@ -29,15 +67,16 @@ struct StoreInner {
 /// 
 /// #[tokio::main]
 /// async fn main() {
-///     // Create store with default config (60 second cleanup interval)
+///     // Create store with default config (60s cleanup, 100MB max)
 ///     let store = Store::new();
 ///     
 ///     // Or with custom config
 ///     let config = StoreConfig::default()
-///         .with_cleanup_interval(Duration::from_secs(30));
+///         .with_cleanup_interval(Duration::from_secs(30))
+///         .with_max_storage_mb(256);
 ///     let store = Store::with_config(config);
 ///     
-///     store.set("key", "value", 300); // 5 minute TTL
+///     store.set("key", "value", 300).unwrap(); // 5 minute TTL
 /// }
 /// ```
 #[derive(Clone)]
@@ -62,6 +101,8 @@ impl Store {
         let inner = Arc::new(StoreInner {
             data: DashMap::new(),
             shutdown_tx,
+            current_size: AtomicUsize::new(0),
+            max_storage_bytes: config.max_storage_bytes,
         });
 
         // Spawn the background cleanup task
@@ -84,11 +125,7 @@ impl Store {
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    let removed = Self::cleanup_internal(&inner.data);
-                    if removed > 0 {
-                        // Optional: could add logging here
-                        // println!("Cleanup removed {} expired entries", removed);
-                    }
+                    Self::cleanup_internal(&inner);
                 }
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
@@ -100,11 +137,31 @@ impl Store {
         }
     }
 
+    /// Calculate the size of a key-value pair in bytes
+    fn entry_size(key: &str, value: &str) -> usize {
+        key.len() + value.len()
+    }
+
     /// Internal cleanup logic (shared between manual and background cleanup)
-    fn cleanup_internal(data: &DashMap<String, Entry>) -> usize {
-        let initial_len = data.len();
-        data.retain(|_, entry| !entry.is_expired());
-        initial_len - data.len()
+    fn cleanup_internal(inner: &StoreInner) -> usize {
+        let mut removed_count = 0;
+        let mut removed_bytes = 0usize;
+        
+        inner.data.retain(|key, entry| {
+            if entry.is_expired() {
+                removed_bytes += Self::entry_size(key, entry.value());
+                removed_count += 1;
+                false
+            } else {
+                true
+            }
+        });
+        
+        if removed_bytes > 0 {
+            inner.current_size.fetch_sub(removed_bytes, Ordering::Relaxed);
+        }
+        
+        removed_count
     }
 
     /// Stores a value with the given key and TTL (time-to-live) in seconds
@@ -112,7 +169,36 @@ impl Store {
     /// If the key already exists, the value is overwritten.
     /// TTL of 0 means the entry never expires.
     /// Non-zero TTL is capped to prevent overflow (max ~100 years).
-    pub fn set(&self, key: impl Into<String>, value: impl Into<String>, ttl_seconds: u64) {
+    /// 
+    /// # Errors
+    /// 
+    /// Returns `SetError::StorageFull` if the storage limit would be exceeded.
+    pub fn set(&self, key: impl Into<String>, value: impl Into<String>, ttl_seconds: u64) -> Result<(), SetError> {
+        let key = key.into();
+        let value = value.into();
+        let new_entry_size = Self::entry_size(&key, &value);
+        
+        // Check if we're updating an existing key (need to account for size difference)
+        let old_entry_size = self.inner.data
+            .get(&key)
+            .map(|entry| Self::entry_size(&key, entry.value().value()))
+            .unwrap_or(0);
+        
+        let size_delta = new_entry_size as isize - old_entry_size as isize;
+        
+        // Check storage limit (0 = unlimited)
+        if self.inner.max_storage_bytes > 0 && size_delta > 0 {
+            let current = self.inner.current_size.load(Ordering::Relaxed);
+            let new_size = current.saturating_add(size_delta as usize);
+            
+            if new_size > self.inner.max_storage_bytes {
+                return Err(SetError::StorageFull {
+                    current_bytes: current,
+                    max_bytes: self.inner.max_storage_bytes,
+                });
+            }
+        }
+        
         // Cap TTL to ~100 years to prevent overflow when adding to Instant
         const MAX_TTL_SECONDS: u64 = 100 * 365 * 24 * 60 * 60; // ~100 years
         
@@ -124,17 +210,31 @@ impl Store {
         };
         
         let expires_at = Instant::now() + Duration::from_secs(safe_ttl);
-        let entry = Entry::new(value.into(), expires_at);
-        self.inner.data.insert(key.into(), entry);
+        let entry = Entry::new(value, expires_at);
+        self.inner.data.insert(key, entry);
+        
+        // Update size tracking
+        if size_delta > 0 {
+            self.inner.current_size.fetch_add(size_delta as usize, Ordering::Relaxed);
+        } else if size_delta < 0 {
+            self.inner.current_size.fetch_sub((-size_delta) as usize, Ordering::Relaxed);
+        }
+        
+        Ok(())
     }
 
     /// Stores a value that expires immediately (for testing purposes)
     #[cfg(test)]
     fn set_expired(&self, key: impl Into<String>, value: impl Into<String>) {
+        let key = key.into();
+        let value = value.into();
+        let entry_size = Self::entry_size(&key, &value);
+        
         // Set expiration to a time in the past
         let expires_at = Instant::now() - Duration::from_secs(1);
-        let entry = Entry::new(value.into(), expires_at);
-        self.inner.data.insert(key.into(), entry);
+        let entry = Entry::new(value, expires_at);
+        self.inner.data.insert(key, entry);
+        self.inner.current_size.fetch_add(entry_size, Ordering::Relaxed);
     }
 
     /// Retrieves a value by key
@@ -146,9 +246,12 @@ impl Store {
         let entry = self.inner.data.get(key)?;
         
         if entry.value().is_expired() {
+            let entry_size = Self::entry_size(key, entry.value().value());
             // Drop the read reference before removing
             drop(entry);
-            self.inner.data.remove(key);
+            if self.inner.data.remove(key).is_some() {
+                self.inner.current_size.fetch_sub(entry_size, Ordering::Relaxed);
+            }
             return None;
         }
         
@@ -159,7 +262,13 @@ impl Store {
     /// 
     /// Returns `true` if the key existed (regardless of expiration), `false` otherwise.
     pub fn delete(&self, key: &str) -> bool {
-        self.inner.data.remove(key).is_some()
+        if let Some((k, entry)) = self.inner.data.remove(key) {
+            let entry_size = Self::entry_size(&k, entry.value());
+            self.inner.current_size.fetch_sub(entry_size, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
     }
 
     /// Manually triggers cleanup of all expired entries
@@ -168,7 +277,7 @@ impl Store {
     /// 
     /// Note: This is also done automatically by the background task.
     pub fn cleanup(&self) -> usize {
-        Self::cleanup_internal(&self.inner.data)
+        Self::cleanup_internal(&self.inner)
     }
 
     /// Returns the number of entries in the store (including expired ones)
@@ -179,6 +288,16 @@ impl Store {
     /// Returns `true` if the store is empty
     pub fn is_empty(&self) -> bool {
         self.inner.data.is_empty()
+    }
+
+    /// Returns the current storage size in bytes
+    pub fn size_bytes(&self) -> usize {
+        self.inner.current_size.load(Ordering::Relaxed)
+    }
+
+    /// Returns the maximum storage size in bytes (0 = unlimited)
+    pub fn max_size_bytes(&self) -> usize {
+        self.inner.max_storage_bytes
     }
 
     /// Checks if a key exists and is not expired
@@ -263,7 +382,7 @@ mod tests {
     #[test]
     fn test_set_and_get() {
         let store = create_test_store();
-        store.set("key1", "value1", 60);
+        store.set("key1", "value1", 60).unwrap();
         
         assert_eq!(store.get("key1"), Some("value1".to_string()));
     }
@@ -277,8 +396,8 @@ mod tests {
     #[test]
     fn test_overwrite_key() {
         let store = create_test_store();
-        store.set("key1", "value1", 60);
-        store.set("key1", "value2", 60);
+        store.set("key1", "value1", 60).unwrap();
+        store.set("key1", "value2", 60).unwrap();
         
         assert_eq!(store.get("key1"), Some("value2".to_string()));
     }
@@ -286,7 +405,7 @@ mod tests {
     #[test]
     fn test_delete() {
         let store = create_test_store();
-        store.set("key1", "value1", 60);
+        store.set("key1", "value1", 60).unwrap();
         
         assert!(store.delete("key1"));
         assert_eq!(store.get("key1"), None);
@@ -313,7 +432,7 @@ mod tests {
         
         store.set_expired("expired1", "value1");
         store.set_expired("expired2", "value2");
-        store.set("valid", "value3", 60);
+        store.set("valid", "value3", 60).unwrap();
         
         thread::sleep(Duration::from_millis(10));
         
@@ -326,7 +445,7 @@ mod tests {
     #[test]
     fn test_contains_key() {
         let store = create_test_store();
-        store.set("key1", "value1", 60);
+        store.set("key1", "value1", 60).unwrap();
         store.set_expired("expired", "value2");
         
         thread::sleep(Duration::from_millis(10));
@@ -339,8 +458,8 @@ mod tests {
     #[test]
     fn test_keys() {
         let store = create_test_store();
-        store.set("key1", "value1", 60);
-        store.set("key2", "value2", 60);
+        store.set("key1", "value1", 60).unwrap();
+        store.set("key2", "value2", 60).unwrap();
         store.set_expired("expired", "value3");
         
         thread::sleep(Duration::from_millis(10));
@@ -358,7 +477,7 @@ mod tests {
         assert!(store.is_empty());
         assert_eq!(store.len(), 0);
         
-        store.set("key1", "value1", 60);
+        store.set("key1", "value1", 60).unwrap();
         
         assert!(!store.is_empty());
         assert_eq!(store.len(), 1);
@@ -368,7 +487,7 @@ mod tests {
     fn test_extreme_ttl_does_not_panic() {
         let store = create_test_store();
         // This should not panic - TTL is capped internally
-        store.set("key1", "value1", u64::MAX);
+        store.set("key1", "value1", u64::MAX).unwrap();
         
         // Should still be retrievable (won't expire for ~100 years)
         assert_eq!(store.get("key1"), Some("value1".to_string()));
@@ -378,7 +497,7 @@ mod tests {
     fn test_zero_ttl_means_never_expire() {
         let store = create_test_store();
         // TTL of 0 means the entry never expires
-        store.set("key1", "value1", 0);
+        store.set("key1", "value1", 0).unwrap();
         
         // Wait a bit to ensure it doesn't expire
         thread::sleep(Duration::from_millis(50));
@@ -400,7 +519,7 @@ mod tests {
                 for i in 0..100 {
                     let key = format!("thread{}:key{}", thread_id, i);
                     let value = format!("value{}", i);
-                    store.set(key, value, 60);
+                    store.set(key, value, 60).unwrap();
                 }
             });
             handles.push(handle);
@@ -423,7 +542,7 @@ mod tests {
         
         // Pre-populate with some data
         for i in 0..100 {
-            store.set(format!("key{}", i), format!("value{}", i), 60);
+            store.set(format!("key{}", i), format!("value{}", i), 60).unwrap();
         }
         
         let successful_reads = Arc::new(AtomicUsize::new(0));
@@ -449,7 +568,7 @@ mod tests {
             let handle = thread::spawn(move || {
                 for i in 0..100 {
                     let key = format!("new_thread{}:key{}", thread_id, i);
-                    store.set(key, "new_value", 60);
+                    store.set(key, "new_value", 60).unwrap();
                 }
             });
             handles.push(handle);
@@ -478,7 +597,7 @@ mod tests {
             let handle = thread::spawn(move || {
                 for i in 0..100 {
                     let value = format!("thread{}:iteration{}", thread_id, i);
-                    store.set("contested_key", value, 60);
+                    store.set("contested_key", value, 60).unwrap();
                 }
             });
             handles.push(handle);
@@ -505,7 +624,7 @@ mod tests {
         // Pre-populate with expiring and non-expiring data
         for i in 0..50 {
             store.set_expired(format!("expiring{}", i), "value"); // Expires immediately
-            store.set(format!("persistent{}", i), "value", 60);
+            store.set(format!("persistent{}", i), "value", 60).unwrap();
         }
         
         thread::sleep(Duration::from_millis(10)); // Ensure expiration
@@ -537,7 +656,7 @@ mod tests {
         let store_writer = Arc::clone(&store);
         let writer_handle = thread::spawn(move || {
             for i in 0..50 {
-                store_writer.set(format!("new{}", i), "value", 60);
+                store_writer.set(format!("new{}", i), "value", 60).unwrap();
             }
         });
         handles.push(writer_handle);
@@ -568,7 +687,7 @@ mod tests {
         // Add some entries that expire quickly
         store.set_expired("expire1", "value1");
         store.set_expired("expire2", "value2");
-        store.set("keep", "value3", 60);
+        store.set("keep", "value3", 60).unwrap();
         
         // Initially all 3 entries exist (even if expired)
         assert_eq!(store.len(), 3);
@@ -586,12 +705,12 @@ mod tests {
         let store1 = Store::new();
         let store2 = store1.clone();
         
-        store1.set("key1", "value1", 60);
+        store1.set("key1", "value1", 60).unwrap();
         
         // Both stores should see the same data
         assert_eq!(store2.get("key1"), Some("value1".to_string()));
         
-        store2.set("key2", "value2", 60);
+        store2.set("key2", "value2", 60).unwrap();
         assert_eq!(store1.get("key2"), Some("value2".to_string()));
     }
 
@@ -602,7 +721,7 @@ mod tests {
         let store = Store::with_config(config);
         
         // TTL=0 means never expire
-        store.set("key1", "value1", 0);
+        store.set("key1", "value1", 0).unwrap();
         
         // Explicitly shutdown
         store.shutdown();
@@ -626,7 +745,7 @@ mod tests {
         
         // Add expiring entries to both
         store1.set_expired("expire", "value");
-        store2.set("keep", "value", 60); // Non-expiring entry
+        store2.set("keep", "value", 60).unwrap(); // Non-expiring entry
         
         // Wait for store1's cleanup to run
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -637,5 +756,119 @@ mod tests {
         // store2 should still have its entry (independent store)
         assert_eq!(store2.len(), 1);
         assert_eq!(store2.get("keep"), Some("value".to_string()));
+    }
+
+    #[test]
+    fn test_storage_size_tracking() {
+        let config = StoreConfig::default().with_max_storage_mb(0); // Unlimited
+        let store = create_test_store_with_config(config);
+        
+        assert_eq!(store.size_bytes(), 0);
+        
+        store.set("key1", "value1", 60).unwrap(); // 4 + 6 = 10 bytes
+        assert_eq!(store.size_bytes(), 10);
+        
+        store.set("key2", "value2", 60).unwrap(); // 4 + 6 = 10 bytes
+        assert_eq!(store.size_bytes(), 20);
+        
+        // Overwrite with smaller value
+        store.set("key1", "x", 60).unwrap(); // 4 + 1 = 5 bytes (delta: -5)
+        assert_eq!(store.size_bytes(), 15);
+        
+        // Delete
+        store.delete("key1");
+        assert_eq!(store.size_bytes(), 10);
+        
+        store.delete("key2");
+        assert_eq!(store.size_bytes(), 0);
+    }
+
+    #[test]
+    fn test_storage_limit_enforced() {
+        // 50 bytes max
+        let config = StoreConfig::default().with_max_storage_bytes(50);
+        let store = create_test_store_with_config(config);
+        
+        // Each entry is 10 bytes (4 key + 6 value)
+        store.set("key1", "value1", 60).unwrap(); // 10 bytes - OK
+        store.set("key2", "value2", 60).unwrap(); // 20 bytes - OK
+        store.set("key3", "value3", 60).unwrap(); // 30 bytes - OK
+        store.set("key4", "value4", 60).unwrap(); // 40 bytes - OK
+        store.set("key5", "value5", 60).unwrap(); // 50 bytes - OK (exactly at limit)
+        
+        // This should fail - would exceed 50 bytes
+        let result = store.set("key6", "value6", 60);
+        assert!(matches!(result, Err(SetError::StorageFull { .. })));
+        
+        // Verify the failed insert didn't add the key
+        assert!(!store.contains_key("key6"));
+        assert_eq!(store.len(), 5);
+        assert_eq!(store.size_bytes(), 50);
+    }
+
+    #[test]
+    fn test_storage_limit_allows_overwrites() {
+        // 30 bytes max
+        let config = StoreConfig::default().with_max_storage_bytes(30);
+        let store = create_test_store_with_config(config);
+        
+        store.set("key1", "value1", 60).unwrap(); // 10 bytes
+        store.set("key2", "value2", 60).unwrap(); // 20 bytes
+        store.set("key3", "value3", 60).unwrap(); // 30 bytes - at limit
+        
+        // Overwriting an existing key with same size should work
+        store.set("key1", "valueX", 60).unwrap();
+        
+        // Overwriting with smaller value should work
+        store.set("key1", "x", 60).unwrap(); // Now 5 bytes for key1
+        
+        // Now we have room for more
+        assert_eq!(store.size_bytes(), 25);
+        
+        // Can add 5 more bytes
+        store.set("k", "1234", 60).unwrap(); // 1 + 4 = 5 bytes
+        assert_eq!(store.size_bytes(), 30);
+    }
+
+    #[test]
+    fn test_storage_freed_on_expiry_cleanup() {
+        let config = StoreConfig::default()
+            .with_max_storage_bytes(100)
+            .with_cleanup_interval(Duration::from_secs(3600)); // Long interval
+        let store = create_test_store_with_config(config);
+        
+        // Add some expiring entries
+        store.set_expired("exp1", "value1"); // Will count towards size
+        store.set_expired("exp2", "value2");
+        store.set("keep", "value3", 60).unwrap();
+        
+        let size_before = store.size_bytes();
+        assert!(size_before > 0);
+        
+        thread::sleep(Duration::from_millis(10));
+        
+        // Cleanup should free memory
+        let removed = store.cleanup();
+        assert_eq!(removed, 2);
+        
+        // Size should be reduced
+        let size_after = store.size_bytes();
+        assert!(size_after < size_before);
+        assert_eq!(size_after, "keep".len() + "value3".len());
+    }
+
+    #[test]
+    fn test_unlimited_storage_when_zero() {
+        let config = StoreConfig::default().with_max_storage_mb(0);
+        let store = create_test_store_with_config(config);
+        
+        assert_eq!(store.max_size_bytes(), 0);
+        
+        // Should be able to add many entries without hitting limit
+        for i in 0..1000 {
+            store.set(format!("key{}", i), format!("value{}", i), 60).unwrap();
+        }
+        
+        assert_eq!(store.len(), 1000);
     }
 }
