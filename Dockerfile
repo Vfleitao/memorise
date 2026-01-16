@@ -63,6 +63,8 @@ USER memorize
 ENV MEMORIZE_HOST=0.0.0.0
 ENV MEMORIZE_PORT=50051
 ENV MEMORIZE_CLEANUP_INTERVAL=60
+# Max storage in MB (default 100MB, set to 0 for unlimited - use with caution!)
+ENV MEMORIZE_MAX_STORAGE_MB=100
 # MEMORIZE_API_KEY is intentionally not set by default (auth disabled)
 
 # Expose the gRPC port

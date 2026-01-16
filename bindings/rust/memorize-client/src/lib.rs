@@ -175,7 +175,11 @@ impl MemorizeClient {
     /// # Arguments
     /// * `key` - The cache key
     /// * `value` - The value to store
-    /// * `ttl_seconds` - Optional time-to-live in seconds. If None, the entry never expires.
+    /// * `ttl_seconds` - Optional time-to-live in seconds. If None or Some(0), the entry never expires.
+    ///
+    /// # Errors
+    /// * `Error::StorageFull` - Server storage capacity has been exceeded
+    /// * `Error::Grpc` - Other gRPC errors (auth failure, invalid arguments, etc.)
     ///
     /// # Example
     /// ```rust,no_run
@@ -185,7 +189,7 @@ impl MemorizeClient {
     /// // Store with 5-minute TTL
     /// client.set("key", "value", Some(300)).await?;
     ///
-    /// // Store without expiration
+    /// // Store without expiration (never expires)
     /// client.set("permanent", "value", None).await?;
     /// # Ok(())
     /// # }
@@ -201,10 +205,11 @@ impl MemorizeClient {
             .set(SetRequest {
                 key: key.into(),
                 value: value.into(),
+                // 0 means never expire on the server, so None maps to 0
                 ttl_seconds: ttl_seconds.unwrap_or(0),
             })
             .await
-            .map_err(Error::from)?;
+            .map_err(|e| Error::from_status(e))?;
         Ok(())
     }
 
@@ -297,25 +302,27 @@ impl MemorizeClient {
     ///
     /// # Arguments
     /// * `pattern` - Optional glob pattern (e.g., "user:*"). If None, returns all keys.
+    /// * `limit` - Optional maximum number of keys to return. If None, uses server default.
     ///
     /// # Example
     /// ```rust,no_run
     /// # use memorize_client::MemorizeClient;
     /// # async fn example() -> Result<(), memorize_client::Error> {
     /// # let client = MemorizeClient::connect("http://localhost:50051").await?;
-    /// // Get all keys
-    /// let all_keys = client.keys(None).await?;
+    /// // Get all keys (up to server default limit)
+    /// let all_keys = client.keys(None, None).await?;
     ///
-    /// // Get keys matching pattern
-    /// let user_keys = client.keys(Some("user:*")).await?;
+    /// // Get first 100 keys
+    /// let limited_keys = client.keys(None, Some(100)).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn keys(&self, pattern: Option<&str>) -> Result<Vec<String>, Error> {
+    pub async fn keys(&self, pattern: Option<&str>, limit: Option<u32>) -> Result<Vec<String>, Error> {
         let mut client = self.inner.clone();
         let response = client
             .keys(KeysRequest {
                 pattern: pattern.map(|s| s.to_string()),
+                limit: limit.unwrap_or(0),
             })
             .await
             .map_err(Error::from)?;

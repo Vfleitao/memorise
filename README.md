@@ -47,17 +47,24 @@ memorize/
 # Build the image
 docker build -t memorize-server .
 
-# Run with default settings (no authentication)
+# Run with default settings (no authentication, 100MB limit)
 docker run -d -p 50051:50051 --name memorize memorize-server
 
 # Run with API key authentication
 docker run -d -p 50051:50051 -e MEMORIZE_API_KEY=your-secret-key memorize-server
 
-# Run with custom settings
+# Run with custom storage limit (500MB)
+docker run -d -p 50051:50051 -e MEMORIZE_MAX_STORAGE_MB=500 memorize-server
+
+# Run with unlimited storage (use with caution!)
+docker run -d -p 50051:50051 -e MEMORIZE_MAX_STORAGE_MB=0 memorize-server
+
+# Run with all custom settings
 docker run -d -p 50051:50051 \
   -e MEMORIZE_HOST=0.0.0.0 \
   -e MEMORIZE_PORT=50051 \
   -e MEMORIZE_CLEANUP_INTERVAL=30 \
+  -e MEMORIZE_MAX_STORAGE_MB=500 \
   -e MEMORIZE_API_KEY=my-secret \
   memorize-server
 ```
@@ -69,6 +76,7 @@ docker run -d -p 50051:50051 \
 | `MEMORIZE_HOST` | `0.0.0.0` | Host address to bind |
 | `MEMORIZE_PORT` | `50051` | gRPC port |
 | `MEMORIZE_CLEANUP_INTERVAL` | `60` | Seconds between TTL cleanup runs |
+| `MEMORIZE_MAX_STORAGE_MB` | `100` | Maximum storage size in MB (0 = unlimited) |
 | `MEMORIZE_API_KEY` | *(none)* | API key for authentication (disabled if not set) |
 
 ### Building from Source
@@ -113,10 +121,17 @@ dist/
 # Using the helper script
 ./dist/run-server.ps1
 
-# Or directly
-./dist/bin/memorize-server.exe
+# With custom storage limit (500MB)
+./dist/run-server.ps1 -MaxStorageMB 500
 
-# With environment variables
+# With unlimited storage (use with caution!)
+./dist/run-server.ps1 -MaxStorageMB 0
+
+# With authentication
+./dist/run-server.ps1 -ApiKey "my-secret"
+
+# Or run directly with environment variables
+$env:MEMORIZE_MAX_STORAGE_MB = 500
 $env:MEMORIZE_API_KEY = "my-secret"
 ./dist/bin/memorize-server.exe
 ```
@@ -202,20 +217,34 @@ See [memorize-proto/proto/memorize.proto](memorize-proto/proto/memorize.proto) f
 
 ## Running Tests
 
-```powershell
-# Run all tests (unit + integration)
-./build.ps1
+### Unit Tests
 
-# Run integration tests against a running server
+```powershell
+# Build and run all unit tests
+./build.ps1
+```
+
+### Integration Tests
+
+Integration tests require a running server:
+
+```powershell
+# Terminal 1: Start the server
+./dist/run-server.ps1
+
+# Terminal 2: Run all integration tests (Rust + C#)
 ./dist/run-tests.ps1
 
-# Or manually:
-# Terminal 1: Start server
-./dist/bin/memorize-server.exe
+# Or run with authentication
+./dist/run-server.ps1 -ApiKey "test-key"
+./dist/run-tests.ps1 -ApiKey "test-key"
+```
 
-# Terminal 2: Run tests
-./dist/bin/memorize-integration-tests.exe      # Rust
-./dist/bin/memorize-integration-tests-csharp.exe  # C#
+Or run the test binaries directly:
+
+```powershell
+./dist/bin/memorize-integration-tests.exe      # Rust tests
+./dist/bin/memorize-integration-tests-csharp.exe  # C# tests
 ```
 
 ## License

@@ -26,7 +26,7 @@
 //!     let store = Store::with_config(config);
 //!
 //!     // Store a value with 60 second TTL
-//!     store.set("user:123", "John Doe", 60);
+//!     store.set("user:123", "John Doe", 60).unwrap();
 //!
 //!     // Retrieve the value
 //!     if let Some(value) = store.get("user:123") {
@@ -47,4 +47,4 @@ mod store;
 
 pub use config::StoreConfig;
 pub use entry::Entry;
-pub use store::Store;
+pub use store::{SetError, Store};
