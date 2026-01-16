@@ -79,20 +79,6 @@ await cache.SetJsonAsync("user:1", user, ttlSeconds: 300);
 User? loaded = await cache.GetJsonAsync<User>("user:1");
 ```
 
-## Cache-Aside Pattern
-
-Automatically fetch and cache data:
-
-```csharp
-// If "user:1" exists, return it
-// Otherwise, call the factory, cache the result, and return it
-var user = await cache.GetOrSetJsonAsync(
-    "user:1",
-    async () => await _database.GetUserAsync(1),  // Only called on cache miss
-    ttlSeconds: 600
-);
-```
-
 ## Thread Safety
 
 `MemorizeClient` is thread-safe and designed for long-lived use. Create one instance and share it across your application:
@@ -111,11 +97,17 @@ public class UserService
     
     public async Task<User?> GetUserAsync(int id)
     {
-        return await _cache.GetOrSetJsonAsync(
-            $"user:{id}",
-            () => _db.Users.FindAsync(id),
-            TimeSpan.FromMinutes(5)
-        );
+        // Try cache first
+        var cached = await _cache.GetJsonAsync<User>($"user:{id}");
+        if (cached != null)
+            return cached;
+
+        // Cache miss - fetch from database
+        var user = await _db.Users.FindAsync(id);
+        if (user != null)
+            await _cache.SetJsonAsync($"user:{id}", user, TimeSpan.FromMinutes(5));
+
+        return user;
     }
 }
 ```

@@ -24,7 +24,6 @@ public static class Program
 
             await TestBasicOperations(cache);
             await TestJsonSerialization(cache);
-            await TestCacheAsidePattern(cache);
             await TestParallelOperations(cache);
             await TestDataIsolation(cache);
             await TestExpiration(cache);
@@ -106,59 +105,6 @@ public static class Program
         await cache.DeleteAsync(testKey);
 
         Console.WriteLine("   ✓ JSON serialization works correctly");
-    }
-
-    /// <summary>
-    /// Test GetOrSet cache-aside pattern
-    /// </summary>
-    private static async Task TestCacheAsidePattern(MemorizeClient cache)
-    {
-        Console.WriteLine("Test: Cache-Aside Pattern (GetOrSet)");
-
-        var testKey = $"cache-aside-{Guid.NewGuid()}";
-        var factoryCallCount = 0;
-
-        // First call - factory should be invoked
-        var value1 = await cache.GetOrSetAsync(
-            testKey,
-            async () =>
-            {
-                factoryCallCount++;
-                await Task.Delay(10); // Simulate async work
-                return "computed-value";
-            },
-            ttlSeconds: 60);
-
-        Debug.Assert(value1 == "computed-value", "First call should return factory value");
-        Debug.Assert(factoryCallCount == 1, "Factory should be called once");
-
-        // Second call - should hit cache, factory not invoked
-        var value2 = await cache.GetOrSetAsync(
-            testKey,
-            async () =>
-            {
-                factoryCallCount++;
-                return "should-not-be-returned";
-            },
-            ttlSeconds: 60);
-
-        Debug.Assert(value2 == "computed-value", "Second call should return cached value");
-        Debug.Assert(factoryCallCount == 1, "Factory should NOT be called again");
-
-        // Test JSON variant
-        var jsonKey = $"cache-aside-json-{Guid.NewGuid()}";
-        var product = await cache.GetOrSetJsonAsync(
-            jsonKey,
-            async () => new TestProduct("Widget", 19.99m),
-            ttlSeconds: 60);
-
-        Debug.Assert(product.Name == "Widget", "JSON cache-aside should work");
-
-        // Cleanup
-        await cache.DeleteAsync(testKey);
-        await cache.DeleteAsync(jsonKey);
-
-        Console.WriteLine("   ✓ Cache-aside pattern works correctly");
     }
 
     /// <summary>

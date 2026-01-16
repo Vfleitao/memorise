@@ -324,54 +324,6 @@ impl MemorizeClient {
             .map_err(Error::from)?;
         Ok(response.into_inner().keys)
     }
-
-    /// Get a value or compute and store it if missing (cache-aside pattern).
-    ///
-    /// This is useful for the common pattern of checking the cache first,
-    /// and only computing/fetching the value if it's not cached.
-    ///
-    /// # Arguments
-    /// * `key` - The cache key
-    /// * `ttl_seconds` - TTL for newly computed values
-    /// * `factory` - Async function to compute the value if missing
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// # use memorize_client::MemorizeClient;
-    /// # async fn example() -> Result<(), memorize_client::Error> {
-    /// # let client = MemorizeClient::connect("http://localhost:50051").await?;
-    /// let value = client.get_or_set("expensive-key", Some(600), || async {
-    ///     // This only runs if the key doesn't exist
-    ///     Ok("computed value".to_string())
-    /// }).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn get_or_set<F, Fut>(
-        &self,
-        key: impl Into<String>,
-        ttl_seconds: Option<u64>,
-        factory: F,
-    ) -> Result<String, Error>
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<String, Error>>,
-    {
-        let key = key.into();
-
-        // Try to get from cache first
-        if let Some(value) = self.get(&key).await? {
-            return Ok(value);
-        }
-
-        // Compute the value
-        let value = factory().await?;
-
-        // Store it
-        self.set(&key, &value, ttl_seconds).await?;
-
-        Ok(value)
-    }
 }
 
 // JSON extension methods (only available with "json" feature)
@@ -437,54 +389,5 @@ impl MemorizeClient {
             }
             None => Ok(None),
         }
-    }
-
-    /// Get or compute a JSON value (cache-aside pattern with serialization).
-    ///
-    /// # Arguments
-    /// * `key` - The cache key
-    /// * `ttl_seconds` - TTL for newly computed values
-    /// * `factory` - Async function to compute the value if missing
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// # use memorize_client::MemorizeClient;
-    /// # use serde::{Serialize, Deserialize};
-    /// # #[derive(Serialize, Deserialize, Clone)]
-    /// # struct User { name: String }
-    /// # async fn load_user() -> User { User { name: "Bob".into() } }
-    /// # async fn example() -> Result<(), memorize_client::Error> {
-    /// # let client = MemorizeClient::connect("http://localhost:50051").await?;
-    /// let user: User = client.get_or_set_json("user:1", Some(3600), || async {
-    ///     Ok(load_user().await)
-    /// }).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn get_or_set_json<T, F, Fut>(
-        &self,
-        key: impl Into<String>,
-        ttl_seconds: Option<u64>,
-        factory: F,
-    ) -> Result<T, Error>
-    where
-        T: serde::Serialize + serde::de::DeserializeOwned,
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<T, Error>>,
-    {
-        let key = key.into();
-
-        // Try to get from cache first
-        if let Some(value) = self.get_json::<T>(&key).await? {
-            return Ok(value);
-        }
-
-        // Compute the value
-        let value = factory().await?;
-
-        // Store it
-        self.set_json(&key, &value, ttl_seconds).await?;
-
-        Ok(value)
     }
 }
