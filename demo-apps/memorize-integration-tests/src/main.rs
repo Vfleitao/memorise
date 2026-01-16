@@ -7,9 +7,45 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Semaphore;
+use tonic::metadata::MetadataValue;
+use tonic::service::Interceptor;
+use tonic::{Request, Status};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 const SERVER_URL: &str = "http://127.0.0.1:50051";
+
+/// Interceptor that adds the API key header to all requests
+#[derive(Clone)]
+struct ApiKeyInterceptor {
+    api_key: Option<String>,
+}
+
+impl Interceptor for ApiKeyInterceptor {
+    fn call(&mut self, mut req: Request<()>) -> Result<Request<()>, Status> {
+        if let Some(ref key) = self.api_key {
+            let value = MetadataValue::try_from(key)
+                .map_err(|_| Status::internal("Invalid API key format"))?;
+            req.metadata_mut().insert("x-api-key", value);
+        }
+        Ok(req)
+    }
+}
+
+fn get_api_key() -> Option<String> {
+    std::env::var("MEMORIZE_API_KEY").ok()
+}
+
+fn get_server_url() -> String {
+    std::env::var("MEMORIZE_SERVER_URL").unwrap_or_else(|_| SERVER_URL.to_string())
+}
+
+async fn create_client() -> Result<MemorizeClient<tonic::service::interceptor::InterceptedService<tonic::transport::Channel, ApiKeyInterceptor>>> {
+    let channel = tonic::transport::Channel::from_shared(get_server_url())?
+        .connect()
+        .await?;
+    let interceptor = ApiKeyInterceptor { api_key: get_api_key() };
+    Ok(MemorizeClient::with_interceptor(channel, interceptor))
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,8 +58,12 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    let server_url = get_server_url();
+    let has_api_key = get_api_key().is_some();
+
     tracing::info!("🧪 Memorize Integration Tests");
-    tracing::info!("   Server: {}", SERVER_URL);
+    tracing::info!("   Server: {}", server_url);
+    tracing::info!("   Auth: {}", if has_api_key { "enabled" } else { "disabled" });
     println!();
 
     // Run all tests
@@ -43,7 +83,7 @@ async fn main() -> Result<()> {
 async fn test_basic_operations() -> Result<()> {
     tracing::info!("Test: Basic Operations");
 
-    let mut client = MemorizeClient::connect(SERVER_URL).await?;
+    let mut client = create_client().await?;
 
     // SET
     let key = format!("basic-test-{}", uuid::Uuid::new_v4());
@@ -110,7 +150,7 @@ async fn test_parallel_set_get() -> Result<()> {
             let key = key.clone();
             let value = value.clone();
             async move {
-                let mut client = MemorizeClient::connect(SERVER_URL).await?;
+                let mut client = create_client().await?;
                 client
                     .set(SetRequest {
                         key,
@@ -142,7 +182,7 @@ async fn test_parallel_set_get() -> Result<()> {
             let expected_value = expected_value.clone();
             let errors = Arc::clone(&errors);
             async move {
-                let mut client = MemorizeClient::connect(SERVER_URL).await?;
+                let mut client = create_client().await?;
                 let response = client.get(GetRequest { key: key.clone() }).await?;
                 let get_response = response.into_inner();
 
@@ -202,7 +242,7 @@ async fn test_data_isolation() -> Result<()> {
 
             async move {
                 let _permit = semaphore.acquire().await?;
-                let mut client = MemorizeClient::connect(SERVER_URL).await?;
+                let mut client = create_client().await?;
 
                 for op in 0..ops_per_client {
                     let key = format!("isolation-client{}-op{}", client_id, op);
@@ -239,7 +279,7 @@ async fn test_data_isolation() -> Result<()> {
     let mut errors = 0;
 
     for (key, expected_value) in expected.iter() {
-        let mut client = MemorizeClient::connect(SERVER_URL).await?;
+        let mut client = create_client().await?;
         let response = client
             .get(GetRequest {
                 key: key.clone(),
@@ -271,7 +311,7 @@ async fn test_data_isolation() -> Result<()> {
 async fn test_expiration() -> Result<()> {
     tracing::info!("Test: TTL Expiration");
 
-    let mut client = MemorizeClient::connect(SERVER_URL).await?;
+    let mut client = create_client().await?;
 
     let key = format!("expire-test-{}", uuid::Uuid::new_v4());
 
@@ -310,7 +350,7 @@ async fn test_streaming_execute() -> Result<()> {
 
     tracing::info!("Test: Streaming Execute (bi-directional)");
 
-    let mut client = MemorizeClient::connect(SERVER_URL).await?;
+    let mut client = create_client().await?;
 
     // Create a stream of commands
     let test_key = format!("stream-test-{}", uuid::Uuid::new_v4());
