@@ -27,19 +27,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "60".to_string())
         .parse()
         .unwrap_or(60);
+    let max_storage_mb: usize = std::env::var("MEMORIZE_MAX_STORAGE_MB")
+        .unwrap_or_else(|_| "100".to_string())
+        .parse()
+        .unwrap_or(100);
     let api_key = std::env::var("MEMORIZE_API_KEY").ok();
 
     let addr = format!("{}:{}", host, port).parse()?;
 
     // Create the store with configuration
     let config = StoreConfig::default()
-        .with_cleanup_interval(Duration::from_secs(cleanup_interval));
+        .with_cleanup_interval(Duration::from_secs(cleanup_interval))
+        .with_max_storage_mb(max_storage_mb);
     let store = Store::with_config(config);
 
     let service = MemorizeService::new(store);
 
     tracing::info!("🚀 Memorize gRPC server listening on {}", addr);
     tracing::info!("   Cleanup interval: {}s", cleanup_interval);
+    if max_storage_mb == 0 {
+        tracing::info!("   Max storage: unlimited");
+    } else {
+        tracing::info!("   Max storage: {} MB", max_storage_mb);
+    }
     if api_key.is_some() {
         tracing::info!("   Authentication: enabled (API key required)");
     } else {

@@ -1,4 +1,4 @@
-use memorize_core::Store;
+use memorize_core::{SetError, Store};
 use memorize_proto::memorize_server::Memorize;
 use memorize_proto::{
     ContainsRequest, ContainsResponse, DeleteRequest, DeleteResponse,
@@ -80,9 +80,20 @@ impl Memorize for MemorizeService {
         let ttl_display = if req.ttl_seconds == 0 { "never".to_string() } else { format!("{}s", req.ttl_seconds) };
         tracing::debug!("SET {} (ttl: {})", truncate_key_for_log(&req.key), ttl_display);
 
-        self.store.set(&req.key, &req.value, req.ttl_seconds);
-
-        Ok(Response::new(SetResponse { success: true }))
+        match self.store.set(&req.key, &req.value, req.ttl_seconds) {
+            Ok(()) => Ok(Response::new(SetResponse { success: true })),
+            Err(SetError::StorageFull { current_bytes, max_bytes }) => {
+                tracing::warn!(
+                    "Storage full: {} bytes used of {} bytes max",
+                    current_bytes,
+                    max_bytes
+                );
+                Err(Status::resource_exhausted(format!(
+                    "Storage capacity exceeded ({} of {} bytes used)",
+                    current_bytes, max_bytes
+                )))
+            }
+        }
     }
 
     async fn delete(
