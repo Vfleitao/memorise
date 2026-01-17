@@ -48,3 +48,7 @@ mod store;
 pub use config::StoreConfig;
 pub use entry::Entry;
 pub use store::{SetError, Store};
+
+// Re-export search constants for use by server layer
+pub use store::DEFAULT_SEARCH_LIMIT;
+pub use store::MAX_SEARCH_LIMIT;

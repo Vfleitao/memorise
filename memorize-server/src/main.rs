@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if api_key.is_some() {
         tracing::info!("   Authentication: enabled (API key required)");
     } else {
-        tracing::warn!("   Authentication: disabled (MEMORIZE_API_KEY not set)");
+        tracing::warn!("   Authentication: disabled (MEMORIZE_API_KEY not set) - this is not recommended for production");
     }
 
     let service_with_auth = MemorizeServer::with_interceptor(service, auth_interceptor(api_key));
