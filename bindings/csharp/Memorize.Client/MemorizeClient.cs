@@ -208,46 +208,6 @@ public sealed class MemorizeClient : IDisposable, IAsyncDisposable
         return response.Keys.ToList();
     }
 
-    /// <summary>
-    /// Gets a value or sets it if not present (cache-aside pattern).
-    /// </summary>
-    /// <param name="key">The key</param>
-    /// <param name="factory">Factory function to create the value if not found</param>
-    /// <param name="ttlSeconds">TTL for newly created values</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>The cached or newly created value</returns>
-    public async Task<string> GetOrSetAsync(
-        string key, 
-        Func<Task<string>> factory, 
-        ulong? ttlSeconds = null,
-        CancellationToken cancellationToken = default)
-    {
-        var existing = await GetAsync(key, cancellationToken);
-        if (existing != null)
-            return existing;
-
-        var value = await factory();
-        await SetAsync(key, value, ttlSeconds ?? _options.DefaultTtlSeconds, cancellationToken);
-        return value;
-    }
-
-    /// <summary>
-    /// Gets a value or sets it if not present (cache-aside pattern).
-    /// </summary>
-    /// <param name="key">The key</param>
-    /// <param name="factory">Factory function to create the value if not found</param>
-    /// <param name="ttl">TTL for newly created values</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>The cached or newly created value</returns>
-    public Task<string> GetOrSetAsync(
-        string key,
-        Func<Task<string>> factory,
-        TimeSpan ttl,
-        CancellationToken cancellationToken = default)
-    {
-        return GetOrSetAsync(key, factory, (ulong)ttl.TotalSeconds, cancellationToken);
-    }
-
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
