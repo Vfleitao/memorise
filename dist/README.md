@@ -71,5 +71,5 @@ protoc --go_out=. --go-grpc_out=. -I ./proto ./proto/memorize.proto
 When MEMORIZE_API_KEY is set, all clients must include the x-api-key header with the matching value.
 If not set, authentication is disabled and all requests are allowed.
 
-Built: 2026-01-16 17:13:04
+Built: 2026-01-16 20:18:44
 Configuration: Release
