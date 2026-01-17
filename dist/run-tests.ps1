@@ -5,9 +5,7 @@ param(
 )
 
 $env:MEMORIZE_SERVER_URL = $ServerUrl
-if ($ApiKey) {
-    $env:MEMORIZE_API_KEY = $ApiKey
-}
+if ($ApiKey) { $env:MEMORIZE_API_KEY = $ApiKey }
 
 Write-Host "Running integration tests against $ServerUrl..." -ForegroundColor Cyan
 & "$PSScriptRoot\bin\memorize-integration-tests.exe"

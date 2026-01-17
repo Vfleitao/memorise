@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package memorize;
+
+// The Memorize cache service
+service Memorize {
+  // Get a value by key
+  rpc Get(GetRequest) returns (GetResponse);
+  
+  // Set a value with TTL
+  rpc Set(SetRequest) returns (SetResponse);
+  
+  // Delete a key
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  
+  // List all keys (non-expired)
+  rpc Keys(KeysRequest) returns (KeysResponse);
+  
+  // Check if a key exists
+  rpc Contains(ContainsRequest) returns (ContainsResponse);
+}
+
+// === Unary Request/Response Messages ===
+
+message GetRequest {
+  string key = 1;
+}
+
+message GetResponse {
+  optional string value = 1;  // None if key doesn't exist or expired
+}
+
+message SetRequest {
+  string key = 1;
+  string value = 2;
+  uint64 ttl_seconds = 3;  // Time-to-live in seconds
+}
+
+message SetResponse {
+  bool success = 1;
+}
+
+message DeleteRequest {
+  string key = 1;
+}
+
+message DeleteResponse {
+  bool deleted = 1;  // true if key existed
+}
+
+message KeysRequest {
+  optional string pattern = 1;  // Future: support pattern matching
+}
+
+message KeysResponse {
+  repeated string keys = 1;
+}
+
+message ContainsRequest {
+  string key = 1;
+}
+
+message ContainsResponse {
+  bool exists = 1;
+}

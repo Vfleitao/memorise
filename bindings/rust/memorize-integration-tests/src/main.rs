@@ -1,51 +1,17 @@
+//! Memorize Integration Tests
+//!
+//! Tests the Memorize cache server using the memorize-client library.
+//! This proves that the Rust client binding works correctly.
+
 use anyhow::Result;
 use futures::future::join_all;
-use memorize_proto::memorize_client::MemorizeClient;
-use memorize_proto::{GetRequest, SetRequest};
+use memorize_client::{MemorizeClient, MemorizeClientOptions};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Semaphore;
-use tonic::metadata::MetadataValue;
-use tonic::service::Interceptor;
-use tonic::{Request, Status};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-const SERVER_URL: &str = "http://127.0.0.1:50051";
-
-/// Interceptor that adds the API key header to all requests
-#[derive(Clone)]
-struct ApiKeyInterceptor {
-    api_key: Option<String>,
-}
-
-impl Interceptor for ApiKeyInterceptor {
-    fn call(&mut self, mut req: Request<()>) -> Result<Request<()>, Status> {
-        if let Some(ref key) = self.api_key {
-            let value = MetadataValue::try_from(key)
-                .map_err(|_| Status::internal("Invalid API key format"))?;
-            req.metadata_mut().insert("x-api-key", value);
-        }
-        Ok(req)
-    }
-}
-
-fn get_api_key() -> Option<String> {
-    std::env::var("MEMORIZE_API_KEY").ok()
-}
-
-fn get_server_url() -> String {
-    std::env::var("MEMORIZE_SERVER_URL").unwrap_or_else(|_| SERVER_URL.to_string())
-}
-
-async fn create_client() -> Result<MemorizeClient<tonic::service::interceptor::InterceptedService<tonic::transport::Channel, ApiKeyInterceptor>>> {
-    let channel = tonic::transport::Channel::from_shared(get_server_url())?
-        .connect()
-        .await?;
-    let interceptor = ApiKeyInterceptor { api_key: get_api_key() };
-    Ok(MemorizeClient::with_interceptor(channel, interceptor))
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -58,16 +24,16 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let server_url = get_server_url();
-    let has_api_key = get_api_key().is_some();
+    let options = MemorizeClientOptions::from_env();
 
-    tracing::info!("🧪 Memorize Integration Tests");
-    tracing::info!("   Server: {}", server_url);
-    tracing::info!("   Auth: {}", if has_api_key { "enabled" } else { "disabled" });
+    tracing::info!("🧪 Memorize Integration Tests (Rust)");
+    tracing::info!("   Server: {}", options.url);
+    tracing::info!("   Auth: {}", if options.api_key.is_some() { "enabled" } else { "disabled" });
     println!();
 
     // Run all tests
     test_basic_operations().await?;
+    test_keys_and_contains().await?;
     test_parallel_set_get().await?;
     test_data_isolation().await?;
     test_expiration().await?;
@@ -78,51 +44,82 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Create a client from environment configuration
+async fn create_client() -> Result<MemorizeClient> {
+    let options = MemorizeClientOptions::from_env();
+    let client = MemorizeClient::with_options(options).await?;
+    Ok(client)
+}
+
 /// Test basic SET/GET/DELETE operations
 async fn test_basic_operations() -> Result<()> {
     tracing::info!("Test: Basic Operations");
 
-    let mut client = create_client().await?;
+    let client = create_client().await?;
 
     // SET
     let key = format!("basic-test-{}", uuid::Uuid::new_v4());
     let value = "hello world";
 
-    client
-        .set(SetRequest {
-            key: key.clone(),
-            value: value.to_string(),
-            ttl_seconds: 60,
-        })
-        .await?;
+    client.set(&key, value, Some(60)).await?;
+    tracing::info!("   SET {} = {}", key, value);
 
     // GET
-    let response = client.get(GetRequest { key: key.clone() }).await?;
-    let get_response = response.into_inner();
-
-    assert!(
-        get_response.value.is_some(),
-        "Key should be found"
-    );
-    assert_eq!(
-        get_response.value.as_deref(),
-        Some(value),
-        "Value should match"
-    );
+    let result = client.get(&key).await?;
+    assert!(result.is_some(), "Key should be found");
+    assert_eq!(result.as_deref(), Some(value), "Value should match");
+    tracing::info!("   GET {} → {:?}", key, result);
 
     // DELETE
-    let delete_response = client
-        .delete(memorize_proto::DeleteRequest { key: key.clone() })
-        .await?
-        .into_inner();
-
-    assert!(delete_response.deleted, "Key should be deleted");
+    let deleted = client.delete(&key).await?;
+    assert!(deleted, "Key should be deleted");
+    tracing::info!("   DELETE {} → {}", key, deleted);
 
     // GET after DELETE
-    let response = client.get(GetRequest { key }).await?;
-    assert!(response.into_inner().value.is_none(), "Key should not be found after delete");
+    let result = client.get(&key).await?;
+    assert!(result.is_none(), "Key should not be found after delete");
+    tracing::info!("   GET {} → None (as expected)", key);
 
     tracing::info!("   ✓ Basic operations work correctly");
+    Ok(())
+}
+
+/// Test KEYS and CONTAINS operations
+async fn test_keys_and_contains() -> Result<()> {
+    tracing::info!("Test: Keys and Contains");
+
+    let client = create_client().await?;
+
+    // Create some test keys with a unique prefix
+    let prefix = format!("keys-test-{}", uuid::Uuid::new_v4());
+    let keys = vec![
+        format!("{}:a", prefix),
+        format!("{}:b", prefix),
+        format!("{}:c", prefix),
+    ];
+
+    for key in &keys {
+        client.set(key, "value", Some(60)).await?;
+    }
+    tracing::info!("   Created {} test keys with prefix {}", keys.len(), prefix);
+
+    // Test CONTAINS
+    assert!(client.contains(&keys[0]).await?, "Key should exist");
+    assert!(!client.contains("nonexistent-key-12345").await?, "Nonexistent key should not exist");
+    tracing::info!("   ✓ CONTAINS works correctly");
+
+    // Test KEYS with pattern
+    let pattern = format!("{}:*", prefix);
+    let found_keys = client.keys(Some(&pattern)).await?;
+    assert_eq!(found_keys.len(), 3, "Should find 3 keys matching pattern");
+    tracing::info!("   KEYS({}) → {} keys", pattern, found_keys.len());
+
+    // Cleanup
+    for key in &keys {
+        client.delete(key).await?;
+    }
+
+    tracing::info!("   ✓ Keys and Contains work correctly");
     Ok(())
 }
 
@@ -149,14 +146,8 @@ async fn test_parallel_set_get() -> Result<()> {
             let key = key.clone();
             let value = value.clone();
             async move {
-                let mut client = create_client().await?;
-                client
-                    .set(SetRequest {
-                        key,
-                        value,
-                        ttl_seconds: 300,
-                    })
-                    .await?;
+                let client = create_client().await?;
+                client.set(&key, &value, Some(300)).await?;
                 Ok::<_, anyhow::Error>(())
             }
         })
@@ -181,19 +172,18 @@ async fn test_parallel_set_get() -> Result<()> {
             let expected_value = expected_value.clone();
             let errors = Arc::clone(&errors);
             async move {
-                let mut client = create_client().await?;
-                let response = client.get(GetRequest { key: key.clone() }).await?;
-                let get_response = response.into_inner();
+                let client = create_client().await?;
+                let result = client.get(&key).await?;
 
-                if get_response.value.is_none() {
+                if result.is_none() {
                     tracing::error!("Key not found: {}", key);
                     errors.fetch_add(1, Ordering::SeqCst);
-                } else if get_response.value.as_deref() != Some(expected_value.as_str()) {
+                } else if result.as_deref() != Some(expected_value.as_str()) {
                     tracing::error!(
                         "Value mismatch for key {}: expected '{}', got '{:?}'",
                         key,
                         expected_value,
-                        get_response.value
+                        result
                     );
                     errors.fetch_add(1, Ordering::SeqCst);
                 }
@@ -241,7 +231,7 @@ async fn test_data_isolation() -> Result<()> {
 
             async move {
                 let _permit = semaphore.acquire().await?;
-                let mut client = create_client().await?;
+                let client = create_client().await?;
 
                 for op in 0..ops_per_client {
                     let key = format!("isolation-client{}-op{}", client_id, op);
@@ -254,13 +244,7 @@ async fn test_data_isolation() -> Result<()> {
                     }
 
                     // SET
-                    client
-                        .set(SetRequest {
-                            key,
-                            value,
-                            ttl_seconds: 300,
-                        })
-                        .await?;
+                    client.set(&key, &value, Some(300)).await?;
                 }
 
                 Ok::<_, anyhow::Error>(())
@@ -278,20 +262,15 @@ async fn test_data_isolation() -> Result<()> {
     let mut errors = 0;
 
     for (key, expected_value) in expected.iter() {
-        let mut client = create_client().await?;
-        let response = client
-            .get(GetRequest {
-                key: key.clone(),
-            })
-            .await?
-            .into_inner();
+        let client = create_client().await?;
+        let result = client.get(key).await?;
 
-        if response.value.as_deref() != Some(expected_value.as_str()) {
+        if result.as_deref() != Some(expected_value.as_str()) {
             tracing::error!(
                 "Isolation failure: key={}, expected={}, got={:?}",
                 key,
                 expected_value,
-                response.value
+                result
             );
             errors += 1;
         }
@@ -310,33 +289,25 @@ async fn test_data_isolation() -> Result<()> {
 async fn test_expiration() -> Result<()> {
     tracing::info!("Test: TTL Expiration");
 
-    let mut client = create_client().await?;
+    let client = create_client().await?;
 
     let key = format!("expire-test-{}", uuid::Uuid::new_v4());
 
     // SET with 1 second TTL
-    client
-        .set(SetRequest {
-            key: key.clone(),
-            value: "temporary".to_string(),
-            ttl_seconds: 1,
-        })
-        .await?;
+    client.set(&key, "temporary", Some(1)).await?;
 
     // Should exist immediately
-    let response = client.get(GetRequest { key: key.clone() }).await?;
-    assert!(response.into_inner().value.is_some(), "Key should exist immediately");
+    let result = client.get(&key).await?;
+    assert!(result.is_some(), "Key should exist immediately");
+    tracing::info!("   SET {} with TTL=1s", key);
 
     // Wait for expiration
     tracing::info!("   Waiting 2 seconds for expiration...");
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     // Should be gone
-    let response = client.get(GetRequest { key }).await?;
-    assert!(
-        response.into_inner().value.is_none(),
-        "Key should be expired after TTL"
-    );
+    let result = client.get(&key).await?;
+    assert!(result.is_none(), "Key should be expired after TTL");
 
     tracing::info!("   ✓ TTL expiration works correctly");
     Ok(())
