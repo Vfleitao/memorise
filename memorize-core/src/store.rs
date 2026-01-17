@@ -291,6 +291,16 @@ impl Store {
         }
     }
 
+    /// Deletes all entries from the store
+    /// 
+    /// Returns the number of entries that were removed.
+    pub fn delete_all(&self) -> usize {
+        let count = self.inner.data.len();
+        self.inner.data.clear();
+        self.inner.current_size.store(0, Ordering::Relaxed);
+        count
+    }
+
     /// Manually triggers cleanup of all expired entries
     /// 
     /// Returns the number of entries removed.
@@ -351,6 +361,80 @@ impl Store {
             Some(n) => iter.take(n).collect(),
             None => iter.collect(),
         }
+    }
+
+    /// Default limit for search_keys operations
+    pub const DEFAULT_SEARCH_LIMIT: usize = 50;
+
+    /// Maximum limit for search_keys operations (hard cap)
+    pub const MAX_SEARCH_LIMIT: usize = 250;
+
+    /// Searches for keys matching a prefix with pagination support.
+    /// 
+    /// Returns matching keys sorted alphabetically, along with the total count
+    /// of all matching keys (before pagination).
+    /// 
+    /// # Arguments
+    /// * `prefix` - The prefix to match keys against (empty string matches all keys)
+    /// * `limit` - Maximum number of keys to return (default: 50, max: 250)
+    /// * `skip` - Number of matching keys to skip for pagination (default: 0)
+    /// 
+    /// # Returns
+    /// A tuple of (matching_keys, total_count) where:
+    /// - `matching_keys` - Keys matching the prefix, sorted alphabetically, with skip/limit applied
+    /// - `total_count` - Total number of keys matching the prefix (before skip/limit)
+    /// 
+    /// # Performance Warning
+    /// 
+    /// **This operation iterates through ALL entries in the store** to find matches.
+    /// It is intended for querying and debugging, not for high-frequency operations.
+    /// 
+    /// For large datasets, this can be memory and CPU intensive because it:
+    /// - Scans every key in the store
+    /// - Collects all matching keys into memory
+    /// - Sorts the results alphabetically
+    /// 
+    /// Use with caution on stores with many entries. Consider using reasonable
+    /// limits and avoid calling this in tight loops or performance-critical paths.
+    /// 
+    /// # Example
+    /// 
+    /// ```rust,no_run
+    /// # use memorize_core::Store;
+    /// # let store = Store::new();
+    /// // Find all keys starting with "user:"
+    /// let (keys, total) = store.search_keys("user:", None, None);
+    /// println!("Found {} total matches, returning first {}", total, keys.len());
+    /// 
+    /// // Paginate through results
+    /// let (page1, _) = store.search_keys("user:", Some(10), Some(0));  // First 10
+    /// let (page2, _) = store.search_keys("user:", Some(10), Some(10)); // Next 10
+    /// ```
+    pub fn search_keys(&self, prefix: &str, limit: Option<usize>, skip: Option<usize>) -> (Vec<String>, usize) {
+        let limit = limit.unwrap_or(Self::DEFAULT_SEARCH_LIMIT).min(Self::MAX_SEARCH_LIMIT);
+        let skip = skip.unwrap_or(0);
+        
+        // Collect all matching, non-expired keys
+        let mut matching_keys: Vec<String> = self.inner.data
+            .iter()
+            .filter(|entry| !entry.value().is_expired())
+            .map(|entry| entry.key().clone())
+            .filter(|key| key.starts_with(prefix))
+            .collect();
+        
+        // Sort alphabetically for deterministic pagination
+        matching_keys.sort();
+        
+        let total_count = matching_keys.len();
+        
+        // Apply skip and limit
+        let result: Vec<String> = matching_keys
+            .into_iter()
+            .skip(skip)
+            .take(limit)
+            .collect();
+        
+        (result, total_count)
     }
 
     /// Gracefully shuts down the background cleanup task
@@ -430,6 +514,62 @@ mod tests {
         assert!(store.delete("key1"));
         assert_eq!(store.get("key1"), None);
         assert!(!store.delete("key1")); // Already deleted
+    }
+
+    #[test]
+    fn test_delete_all() {
+        let store = create_test_store();
+        
+        // Add some entries
+        store.set("key1", "value1", 60).unwrap();
+        store.set("key2", "value2", 60).unwrap();
+        store.set("key3", "value3", 60).unwrap();
+        
+        assert_eq!(store.len(), 3);
+        assert!(store.size_bytes() > 0);
+        
+        // Delete all
+        let deleted = store.delete_all();
+        assert_eq!(deleted, 3);
+        
+        // Verify everything is gone
+        assert_eq!(store.len(), 0);
+        assert!(store.is_empty());
+        assert_eq!(store.size_bytes(), 0);
+        assert_eq!(store.get("key1"), None);
+        assert_eq!(store.get("key2"), None);
+        assert_eq!(store.get("key3"), None);
+    }
+
+    #[test]
+    fn test_delete_all_empty_store() {
+        let store = create_test_store();
+        
+        // Delete all on empty store should return 0
+        let deleted = store.delete_all();
+        assert_eq!(deleted, 0);
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn test_delete_all_resets_size_tracking() {
+        let config = StoreConfig::default().with_max_storage_bytes(100);
+        let store = create_test_store_with_config(config);
+        
+        // Fill up storage
+        store.set("key1", "value1", 60).unwrap();
+        store.set("key2", "value2", 60).unwrap();
+        
+        let size_before = store.size_bytes();
+        assert!(size_before > 0);
+        
+        // Delete all should reset size to 0
+        store.delete_all();
+        assert_eq!(store.size_bytes(), 0);
+        
+        // Should be able to add entries again (storage limit reset)
+        store.set("new1", "value1", 60).unwrap();
+        assert!(store.size_bytes() > 0);
     }
 
     #[test]
@@ -977,5 +1117,190 @@ mod tests {
         store.set("newkey", "value!", 60).unwrap();
         assert_eq!(store.size_bytes(), 48);
         assert!(store.contains_key("newkey"));
+    }
+
+    // === search_keys tests ===
+
+    #[test]
+    fn test_search_keys_basic_prefix() {
+        let store = create_test_store();
+        
+        store.set("user:1", "alice", 60).unwrap();
+        store.set("user:2", "bob", 60).unwrap();
+        store.set("user:3", "charlie", 60).unwrap();
+        store.set("session:1", "data1", 60).unwrap();
+        store.set("session:2", "data2", 60).unwrap();
+        
+        let (keys, total) = store.search_keys("user:", None, None);
+        assert_eq!(total, 3);
+        assert_eq!(keys, vec!["user:1", "user:2", "user:3"]);
+        
+        let (keys, total) = store.search_keys("session:", None, None);
+        assert_eq!(total, 2);
+        assert_eq!(keys, vec!["session:1", "session:2"]);
+    }
+
+    #[test]
+    fn test_search_keys_empty_prefix_matches_all() {
+        let store = create_test_store();
+        
+        store.set("a", "1", 60).unwrap();
+        store.set("b", "2", 60).unwrap();
+        store.set("c", "3", 60).unwrap();
+        
+        let (keys, total) = store.search_keys("", None, None);
+        assert_eq!(total, 3);
+        assert_eq!(keys, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_search_keys_no_matches() {
+        let store = create_test_store();
+        
+        store.set("user:1", "alice", 60).unwrap();
+        store.set("user:2", "bob", 60).unwrap();
+        
+        let (keys, total) = store.search_keys("nonexistent:", None, None);
+        assert_eq!(total, 0);
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn test_search_keys_default_limit() {
+        let store = create_test_store();
+        
+        // Add 100 keys
+        for i in 0..100 {
+            store.set(format!("key:{:03}", i), "value", 60).unwrap();
+        }
+        
+        // Default limit is 50
+        let (keys, total) = store.search_keys("key:", None, None);
+        assert_eq!(total, 100);
+        assert_eq!(keys.len(), 50);
+        
+        // Keys should be sorted, so first 50
+        assert_eq!(keys[0], "key:000");
+        assert_eq!(keys[49], "key:049");
+    }
+
+    #[test]
+    fn test_search_keys_custom_limit() {
+        let store = create_test_store();
+        
+        for i in 0..20 {
+            store.set(format!("item:{:02}", i), "value", 60).unwrap();
+        }
+        
+        let (keys, total) = store.search_keys("item:", Some(5), None);
+        assert_eq!(total, 20);
+        assert_eq!(keys.len(), 5);
+        assert_eq!(keys, vec!["item:00", "item:01", "item:02", "item:03", "item:04"]);
+    }
+
+    #[test]
+    fn test_search_keys_pagination_with_skip() {
+        let store = create_test_store();
+        
+        for i in 0..10 {
+            store.set(format!("p:{}", i), "value", 60).unwrap();
+        }
+        
+        // First page
+        let (page1, total) = store.search_keys("p:", Some(3), Some(0));
+        assert_eq!(total, 10);
+        assert_eq!(page1, vec!["p:0", "p:1", "p:2"]);
+        
+        // Second page
+        let (page2, _) = store.search_keys("p:", Some(3), Some(3));
+        assert_eq!(page2, vec!["p:3", "p:4", "p:5"]);
+        
+        // Third page
+        let (page3, _) = store.search_keys("p:", Some(3), Some(6));
+        assert_eq!(page3, vec!["p:6", "p:7", "p:8"]);
+        
+        // Last page (partial)
+        let (page4, _) = store.search_keys("p:", Some(3), Some(9));
+        assert_eq!(page4, vec!["p:9"]);
+    }
+
+    #[test]
+    fn test_search_keys_skip_beyond_results() {
+        let store = create_test_store();
+        
+        store.set("key:1", "value", 60).unwrap();
+        store.set("key:2", "value", 60).unwrap();
+        
+        let (keys, total) = store.search_keys("key:", Some(10), Some(100));
+        assert_eq!(total, 2);
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn test_search_keys_sorted_alphabetically() {
+        let store = create_test_store();
+        
+        // Insert in non-alphabetical order
+        store.set("z:last", "value", 60).unwrap();
+        store.set("a:first", "value", 60).unwrap();
+        store.set("m:middle", "value", 60).unwrap();
+        
+        let (keys, _) = store.search_keys("", None, None);
+        assert_eq!(keys, vec!["a:first", "m:middle", "z:last"]);
+    }
+
+    #[test]
+    fn test_search_keys_excludes_expired() {
+        let store = create_test_store();
+        
+        store.set("active:1", "value", 60).unwrap();
+        store.set("active:2", "value", 60).unwrap();
+        store.set_expired("active:expired", "value");
+        
+        thread::sleep(Duration::from_millis(10));
+        
+        let (keys, total) = store.search_keys("active:", None, None);
+        assert_eq!(total, 2);
+        assert_eq!(keys, vec!["active:1", "active:2"]);
+    }
+
+    #[test]
+    fn test_search_keys_empty_store() {
+        let store = create_test_store();
+        
+        let (keys, total) = store.search_keys("any:", None, None);
+        assert_eq!(total, 0);
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn test_search_keys_limit_larger_than_results() {
+        let store = create_test_store();
+        
+        store.set("x:1", "value", 60).unwrap();
+        store.set("x:2", "value", 60).unwrap();
+        
+        let (keys, total) = store.search_keys("x:", Some(100), None);
+        assert_eq!(total, 2);
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn test_search_keys_max_limit_enforced() {
+        let store = create_test_store();
+        
+        // Add 300 keys (more than max limit of 250)
+        for i in 0..300 {
+            store.set(format!("max:{:03}", i), "value", 60).unwrap();
+        }
+        
+        // Request 500 - should be capped to 250
+        let (keys, total) = store.search_keys("max:", Some(500), None);
+        assert_eq!(total, 300);
+        assert_eq!(keys.len(), 250, "Limit should be capped to MAX_SEARCH_LIMIT (250)");
+        
+        // Verify the first and last keys are correct (sorted)
+        assert_eq!(keys[0], "max:000");
+        assert_eq!(keys[249], "max:249");
     }
 }
