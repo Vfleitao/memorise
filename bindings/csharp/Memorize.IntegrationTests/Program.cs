@@ -5,6 +5,17 @@ using Memorize.Client;
 /// Integration tests for the Memorize cache server using the Memorize.Client library.
 /// Demonstrates how simple the client is to use while thoroughly testing the server.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <strong>Important: Test Isolation</strong>
+/// </para>
+/// <para>
+/// These integration tests use <c>DeleteAllAsync</c> for cleanup between tests and are
+/// <strong>not safe to run concurrently</strong> against a shared server instance. Always run
+/// integration tests against a dedicated test server instance to avoid interference
+/// with other test suites or production data.
+/// </para>
+/// </remarks>
 public static class Program
 {
     public static async Task Main(string[] args)
@@ -23,6 +34,8 @@ public static class Program
             using var cache = new MemorizeClient(options);
 
             await TestBasicOperations(cache);
+            await TestDeleteAll(cache);
+            await TestSearchKeys(cache);
             await TestJsonSerialization(cache);
             await TestParallelOperations(cache);
             await TestDataIsolation(cache);
@@ -79,6 +92,42 @@ public static class Program
         Debug.Assert(afterDelete == null, "GET after DELETE should return null");
 
         Console.WriteLine("   ✓ Basic operations work correctly");
+    }
+
+    /// <summary>
+    /// Test DELETE_ALL operation
+    /// </summary>
+    private static async Task TestDeleteAll(MemorizeClient cache)
+    {
+        Console.WriteLine("Test: Delete All");
+
+        var prefix = $"delete-all-test-{Guid.NewGuid()}";
+
+        // Create some test keys
+        for (int i = 0; i < 5; i++)
+        {
+            await cache.SetAsync($"{prefix}:{i}", $"value{i}", ttlSeconds: 300);
+        }
+        Console.WriteLine($"   Created 5 test keys with prefix {prefix}");
+
+        // Verify keys exist
+        var keysBefore = await cache.GetKeysAsync();
+        var matchingBefore = keysBefore.Count(k => k.StartsWith(prefix));
+        Debug.Assert(matchingBefore == 5, $"Should have 5 keys, found {matchingBefore}");
+        Console.WriteLine($"   Verified {matchingBefore} keys exist");
+
+        // Delete all
+        var deletedCount = await cache.DeleteAllAsync();
+        Console.WriteLine($"   DELETE_ALL → {deletedCount} entries deleted");
+        Debug.Assert(deletedCount >= 5, $"Should have deleted at least 5 entries, deleted {deletedCount}");
+
+        // Verify keys are gone
+        var keysAfter = await cache.GetKeysAsync();
+        var matchingAfter = keysAfter.Count(k => k.StartsWith(prefix));
+        Debug.Assert(matchingAfter == 0, $"Should have no keys after delete_all, found {matchingAfter}");
+        Console.WriteLine("   Verified all keys are gone");
+
+        Console.WriteLine("   ✓ Delete All works correctly");
     }
 
     /// <summary>
@@ -238,6 +287,76 @@ public static class Program
         Debug.Assert(expired == null, "Key should be expired after TTL");
 
         Console.WriteLine("   ✓ TTL expiration works correctly");
+    }
+
+    /// <summary>
+    /// Test SearchKeys with prefix matching and pagination
+    /// </summary>
+    private static async Task TestSearchKeys(MemorizeClient cache)
+    {
+        Console.WriteLine("Test: Search Keys (prefix matching and pagination)");
+
+        // Clear any existing keys first
+        await cache.DeleteAllAsync();
+
+        // Create test keys with different prefixes
+        var prefix = $"search-test-{Guid.NewGuid()}";
+        var userPrefix = $"{prefix}:user";
+        var sessionPrefix = $"{prefix}:session";
+
+        // Create 15 user keys and 5 session keys
+        for (int i = 0; i < 15; i++)
+        {
+            await cache.SetAsync($"{userPrefix}:{i:D2}", $"user-value-{i}", ttlSeconds: 300);
+        }
+        for (int i = 0; i < 5; i++)
+        {
+            await cache.SetAsync($"{sessionPrefix}:{i}", $"session-value-{i}", ttlSeconds: 300);
+        }
+        Console.WriteLine($"   Created 15 user keys and 5 session keys with prefix {prefix}");
+
+        // Test 1: Search for all user keys (should get default limit of 50, but we only have 15)
+        var (keys, total) = await cache.SearchKeysAsync(userPrefix);
+        Debug.Assert(total == 15, $"Should find 15 user keys total, found {total}");
+        Debug.Assert(keys.Count == 15, $"Should return all 15 user keys, got {keys.Count}");
+        Console.WriteLine($"   SearchKeys({userPrefix}) → {keys.Count} keys, total={total}");
+
+        // Test 2: Search for session keys
+        (keys, total) = await cache.SearchKeysAsync(sessionPrefix);
+        Debug.Assert(total == 5, $"Should find 5 session keys total, found {total}");
+        Debug.Assert(keys.Count == 5, $"Should return all 5 session keys, got {keys.Count}");
+        Console.WriteLine($"   SearchKeys({sessionPrefix}) → {keys.Count} keys, total={total}");
+
+        // Test 3: Pagination - get first 5 user keys
+        var (page1, totalPage1) = await cache.SearchKeysAsync(userPrefix, limit: 5, skip: 0);
+        Debug.Assert(totalPage1 == 15, $"Total should still be 15, got {totalPage1}");
+        Debug.Assert(page1.Count == 5, $"Should return 5 keys, got {page1.Count}");
+        Console.WriteLine($"   Page 1 (limit=5, skip=0): [{string.Join(", ", page1)}]");
+
+        // Test 4: Pagination - get next 5 user keys
+        var (page2, _) = await cache.SearchKeysAsync(userPrefix, limit: 5, skip: 5);
+        Debug.Assert(page2.Count == 5, $"Should return 5 keys, got {page2.Count}");
+        Console.WriteLine($"   Page 2 (limit=5, skip=5): [{string.Join(", ", page2)}]");
+
+        // Test 5: Pagination - get last 5 user keys
+        var (page3, _) = await cache.SearchKeysAsync(userPrefix, limit: 5, skip: 10);
+        Debug.Assert(page3.Count == 5, $"Should return 5 keys, got {page3.Count}");
+        Console.WriteLine($"   Page 3 (limit=5, skip=10): [{string.Join(", ", page3)}]");
+
+        // Verify pagination returns different keys and they're sorted
+        Debug.Assert(string.Compare(page1[0], page2[0]) < 0, "Page 1 keys should come before page 2 keys");
+        Debug.Assert(string.Compare(page2[0], page3[0]) < 0, "Page 2 keys should come before page 3 keys");
+
+        // Test 6: Search with no matches
+        (keys, total) = await cache.SearchKeysAsync("nonexistent-prefix-xyz");
+        Debug.Assert(total == 0, $"Should find no keys, found {total}");
+        Debug.Assert(keys.Count == 0, $"Should return empty list, got {keys.Count}");
+        Console.WriteLine($"   SearchKeys(nonexistent-prefix) → {keys.Count} keys, total={total}");
+
+        // Cleanup
+        await cache.DeleteAllAsync();
+
+        Console.WriteLine("   ✓ Search Keys works correctly with prefix matching and pagination");
     }
 }
 

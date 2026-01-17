@@ -194,6 +194,40 @@ public sealed class MemorizeClient : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
+    /// Deletes all entries from the cache.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>⚠️ Warning: Destructive Operation</strong>
+    /// </para>
+    /// <para>
+    /// This operation:
+    /// <list type="bullet">
+    /// <item><description><strong>Immediately deletes ALL entries</strong> from the cache</description></item>
+    /// <item><description><strong>Cannot be undone</strong> - all data is permanently lost</description></item>
+    /// <item><description><strong>Affects all clients/services</strong> using the same cache instance</description></item>
+    /// <item><description>Should be used with <strong>extreme caution</strong> in production environments</description></item>
+    /// </list>
+    /// </para>
+    /// <para>
+    /// The returned count may be slightly inaccurate in concurrent scenarios where other
+    /// operations occur simultaneously. This is acceptable for a cache where the count is informational.
+    /// </para>
+    /// </remarks>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The approximate number of entries that were deleted</returns>
+    public async Task<ulong> DeleteAllAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+
+        var response = await _grpcClient.DeleteAllAsync(
+            new Proto.DeleteAllRequest(),
+            cancellationToken: cancellationToken);
+
+        return response.DeletedCount;
+    }
+
+    /// <summary>
     /// Checks if a key exists in the cache (and is not expired).
     /// </summary>
     /// <param name="key">The key to check</param>
@@ -226,6 +260,54 @@ public sealed class MemorizeClient : IDisposable, IAsyncDisposable
             cancellationToken: cancellationToken);
 
         return response.Keys.ToList();
+    }
+
+    /// <summary>
+    /// Searches for keys matching a prefix with pagination support.
+    /// Returns matching keys sorted alphabetically, along with the total count
+    /// of all matching keys (before pagination).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Performance Warning:</b> This operation iterates through ALL entries on the server
+    /// to find matches. It is intended for querying and debugging, not for high-frequency operations.
+    /// </para>
+    /// <para>
+    /// For large datasets, this can be memory and CPU intensive. Use with caution
+    /// on stores with many entries. Consider using reasonable limits and avoid
+    /// calling this in tight loops or performance-critical paths.
+    /// </para>
+    /// </remarks>
+    /// <param name="prefix">The prefix to match keys against (empty string matches all keys, max: 256 bytes)</param>
+    /// <param name="limit">Maximum number of keys to return (0 = default of 50, max: 250)</param>
+    /// <param name="skip">Number of matching keys to skip for pagination (default: 0)</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>A tuple of (matching keys sorted alphabetically, total count of matches before pagination)</returns>
+    /// <example>
+    /// <code>
+    /// // Find all keys starting with "user:"
+    /// var (keys, total) = await cache.SearchKeysAsync("user:");
+    /// Console.WriteLine($"Found {total} total matches, returning {keys.Count}");
+    /// 
+    /// // Paginate through results (10 per page)
+    /// var (page1, _) = await cache.SearchKeysAsync("user:", limit: 10, skip: 0);  // First 10
+    /// var (page2, _) = await cache.SearchKeysAsync("user:", limit: 10, skip: 10); // Next 10
+    /// </code>
+    /// </example>
+    public async Task<(IReadOnlyList<string> Keys, ulong TotalCount)> SearchKeysAsync(
+        string prefix,
+        uint limit = 0,
+        uint skip = 0,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(prefix);
+
+        var response = await _grpcClient.SearchKeysAsync(
+            new Proto.SearchKeysRequest { Prefix = prefix, Limit = limit, Skip = skip },
+            cancellationToken: cancellationToken);
+
+        return (response.Keys.ToList(), response.TotalCount);
     }
 
     private void ThrowIfDisposed()
