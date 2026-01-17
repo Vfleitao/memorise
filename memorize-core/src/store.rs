@@ -891,4 +891,91 @@ mod tests {
         
         assert_eq!(store.len(), 1000);
     }
+
+    #[test]
+    fn test_storage_full_error_contains_correct_info() {
+        // Set a very small limit: 100 bytes
+        let config = StoreConfig::default().with_max_storage_bytes(100);
+        let store = create_test_store_with_config(config);
+        
+        // Fill up storage
+        // key="k00" (3 bytes) + value="val00" (5 bytes) = 8 bytes each
+        for i in 0..12 {
+            store.set(format!("k{:02}", i), format!("val{:02}", i), 60).unwrap();
+        }
+        
+        // Verify we're near capacity (12 * 8 = 96 bytes)
+        let current_size = store.size_bytes();
+        assert_eq!(current_size, 96, "Should be at 96 bytes");
+        
+        // Try to add more - should fail with StorageFull
+        // "overflow" (8) + "data" (4) = 12 bytes, would put us at 108 > 100
+        let result = store.set("overflow", "data", 60);
+        
+        match result {
+            Err(SetError::StorageFull { current_bytes, max_bytes }) => {
+                assert_eq!(max_bytes, 100, "max_bytes should be 100");
+                assert_eq!(current_bytes, 96, "current_bytes should be 96");
+            }
+            Ok(_) => panic!("Expected StorageFull error, but set succeeded"),
+        }
+        
+        // Verify the key wasn't added
+        assert!(!store.contains_key("overflow"));
+        assert_eq!(store.len(), 12);
+    }
+
+    #[test]
+    fn test_storage_limit_with_mb_config() {
+        // Test the with_max_storage_mb helper (1 MB = 1,048,576 bytes)
+        let config = StoreConfig::default().with_max_storage_mb(1);
+        let store = create_test_store_with_config(config);
+        
+        assert_eq!(store.max_size_bytes(), 1024 * 1024);
+        
+        // Create a large value (~100KB)
+        let large_value = "x".repeat(100_000);
+        
+        // Should be able to add ~10 of these
+        for i in 0..10 {
+            store.set(format!("large{}", i), &large_value, 60).unwrap();
+        }
+        
+        // Size should be approximately 10 * (6 + 100_000) = ~1,000,060 bytes
+        let size = store.size_bytes();
+        assert!(size > 1_000_000, "Should have stored ~1MB");
+        assert!(size < 1_048_576, "Should still be under limit");
+        
+        // One more should fail
+        let result = store.set("large10", &large_value, 60);
+        assert!(matches!(result, Err(SetError::StorageFull { .. })));
+    }
+
+    #[test]
+    fn test_storage_limit_delete_frees_space_for_new_entries() {
+        // 50 bytes limit
+        let config = StoreConfig::default().with_max_storage_bytes(50);
+        let store = create_test_store_with_config(config);
+        
+        // Fill it up: key="key0" (4) + value="val00" (5) = 9 bytes each
+        // 5 entries * 9 bytes = 45 bytes
+        for i in 0..5 {
+            store.set(format!("key{}", i), format!("val{:02}", i), 60).unwrap();
+        }
+        assert_eq!(store.size_bytes(), 45);
+        
+        // Can't add more (would exceed 50)
+        // "newkey" (6) + "value!" (6) = 12 bytes, 45 + 12 = 57 > 50
+        let result = store.set("newkey", "value!", 60);
+        assert!(matches!(result, Err(SetError::StorageFull { .. })));
+        
+        // Delete one entry (frees 9 bytes)
+        store.delete("key0");
+        assert_eq!(store.size_bytes(), 36);
+        
+        // Now we can add a new entry (36 + 12 = 48 <= 50)
+        store.set("newkey", "value!", 60).unwrap();
+        assert_eq!(store.size_bytes(), 48);
+        assert!(store.contains_key("newkey"));
+    }
 }
