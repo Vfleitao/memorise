@@ -33,7 +33,9 @@ async fn main() -> Result<()> {
 
     // Run all tests
     test_basic_operations().await?;
+    test_delete_all().await?;
     test_keys_and_contains().await?;
+    test_search_keys().await?;
     test_parallel_set_get().await?;
     test_data_isolation().await?;
     test_expiration().await?;
@@ -81,6 +83,39 @@ async fn test_basic_operations() -> Result<()> {
     tracing::info!("   GET {} → None (as expected)", key);
 
     tracing::info!("   ✓ Basic operations work correctly");
+    Ok(())
+}
+
+/// Test DELETE_ALL operation
+async fn test_delete_all() -> Result<()> {
+    tracing::info!("Test: Delete All");
+
+    let client = create_client().await?;
+    let prefix = format!("delete-all-test-{}", uuid::Uuid::new_v4());
+
+    // Create some test keys
+    for i in 0..5 {
+        let key = format!("{}:{}", prefix, i);
+        client.set(&key, &format!("value{}", i), Some(300)).await?;
+    }
+    tracing::info!("   Created 5 test keys with prefix {}", prefix);
+
+    // Verify keys exist
+    let keys_before = client.keys(Some(&format!("{}:*", prefix)), None).await?;
+    assert_eq!(keys_before.len(), 5, "Should have 5 keys");
+    tracing::info!("   Verified {} keys exist", keys_before.len());
+
+    // Delete all
+    let deleted_count = client.delete_all().await?;
+    tracing::info!("   DELETE_ALL → {} entries deleted", deleted_count);
+    assert!(deleted_count >= 5, "Should have deleted at least 5 entries");
+
+    // Verify keys are gone
+    let keys_after = client.keys(Some(&format!("{}:*", prefix)), None).await?;
+    assert_eq!(keys_after.len(), 0, "Should have no keys after delete_all");
+    tracing::info!("   Verified all keys are gone");
+
+    tracing::info!("   ✓ Delete All works correctly");
     Ok(())
 }
 
@@ -310,5 +345,75 @@ async fn test_expiration() -> Result<()> {
     assert!(result.is_none(), "Key should be expired after TTL");
 
     tracing::info!("   ✓ TTL expiration works correctly");
+    Ok(())
+}
+
+/// Test search_keys with prefix matching and pagination
+async fn test_search_keys() -> Result<()> {
+    tracing::info!("Test: Search Keys (prefix matching and pagination)");
+
+    let client = create_client().await?;
+
+    // Clear any existing test keys first
+    client.delete_all().await?;
+
+    // Create test keys with different prefixes
+    let prefix = format!("search-test-{}", uuid::Uuid::new_v4());
+    let user_prefix = format!("{}:user", prefix);
+    let session_prefix = format!("{}:session", prefix);
+
+    // Create 15 user keys and 5 session keys
+    for i in 0..15 {
+        let key = format!("{}:{:02}", user_prefix, i);
+        client.set(&key, &format!("user-value-{}", i), Some(300)).await?;
+    }
+    for i in 0..5 {
+        let key = format!("{}:{}", session_prefix, i);
+        client.set(&key, &format!("session-value-{}", i), Some(300)).await?;
+    }
+    tracing::info!("   Created 15 user keys and 5 session keys with prefix {}", prefix);
+
+    // Test 1: Search for all user keys (should get first 50 by default, but we only have 15)
+    let (keys, total) = client.search_keys(&user_prefix, None, None).await?;
+    assert_eq!(total, 15, "Should find 15 user keys total");
+    assert_eq!(keys.len(), 15, "Should return all 15 user keys");
+    tracing::info!("   search_keys({}) → {} keys, total={}", user_prefix, keys.len(), total);
+
+    // Test 2: Search for session keys
+    let (keys, total) = client.search_keys(&session_prefix, None, None).await?;
+    assert_eq!(total, 5, "Should find 5 session keys total");
+    assert_eq!(keys.len(), 5, "Should return all 5 session keys");
+    tracing::info!("   search_keys({}) → {} keys, total={}", session_prefix, keys.len(), total);
+
+    // Test 3: Pagination - get first 5 user keys
+    let (page1, total) = client.search_keys(&user_prefix, Some(5), Some(0)).await?;
+    assert_eq!(total, 15, "Total should still be 15");
+    assert_eq!(page1.len(), 5, "Should return 5 keys");
+    tracing::info!("   Page 1 (limit=5, skip=0): {:?}", page1);
+
+    // Test 4: Pagination - get next 5 user keys
+    let (page2, _) = client.search_keys(&user_prefix, Some(5), Some(5)).await?;
+    assert_eq!(page2.len(), 5, "Should return 5 keys");
+    tracing::info!("   Page 2 (limit=5, skip=5): {:?}", page2);
+
+    // Test 5: Pagination - get last 5 user keys
+    let (page3, _) = client.search_keys(&user_prefix, Some(5), Some(10)).await?;
+    assert_eq!(page3.len(), 5, "Should return 5 keys");
+    tracing::info!("   Page 3 (limit=5, skip=10): {:?}", page3);
+
+    // Verify pagination returns different keys and they're sorted
+    assert!(page1[0] < page2[0], "Page 1 keys should come before page 2 keys");
+    assert!(page2[0] < page3[0], "Page 2 keys should come before page 3 keys");
+
+    // Test 6: Search with no matches
+    let (keys, total) = client.search_keys("nonexistent-prefix-xyz", None, None).await?;
+    assert_eq!(total, 0, "Should find no keys");
+    assert!(keys.is_empty(), "Should return empty list");
+    tracing::info!("   search_keys(nonexistent-prefix) → {} keys, total={}", keys.len(), total);
+
+    // Cleanup
+    client.delete_all().await?;
+
+    tracing::info!("   ✓ Search Keys works correctly with prefix matching and pagination");
     Ok(())
 }

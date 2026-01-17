@@ -2,7 +2,10 @@ use memorize_core::{SetError, Store};
 use memorize_proto::memorize_server::Memorize;
 use memorize_proto::{
     ContainsRequest, ContainsResponse, DeleteRequest, DeleteResponse,
-    GetRequest, GetResponse, KeysRequest, KeysResponse, SetRequest, SetResponse,
+    DeleteAllRequest, DeleteAllResponse,
+    GetRequest, GetResponse, KeysRequest, KeysResponse, 
+    SearchKeysRequest, SearchKeysResponse,
+    SetRequest, SetResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -14,6 +17,9 @@ const MAX_VALUE_LENGTH: usize = 1024 * 1024;
 
 /// Default limit for keys listing
 const DEFAULT_KEYS_LIMIT: u32 = 10000;
+
+/// Maximum limit for search_keys operations (hard cap)
+const MAX_SEARCH_LIMIT: u32 = 250;
 
 /// Truncates a key for safe logging (prevents leaking sensitive key data)
 fn truncate_key_for_log(key: &str) -> String {
@@ -109,6 +115,17 @@ impl Memorize for MemorizeService {
         Ok(Response::new(DeleteResponse { deleted }))
     }
 
+    async fn delete_all(
+        &self,
+        _request: Request<DeleteAllRequest>,
+    ) -> Result<Response<DeleteAllResponse>, Status> {
+        tracing::info!("DELETE_ALL");
+
+        let deleted_count = self.store.delete_all() as u64;
+
+        Ok(Response::new(DeleteAllResponse { deleted_count }))
+    }
+
     async fn keys(&self, request: Request<KeysRequest>) -> Result<Response<KeysResponse>, Status> {
         let req = request.get_ref();
         let limit = if req.limit == 0 { DEFAULT_KEYS_LIMIT } else { req.limit };
@@ -117,6 +134,29 @@ impl Memorize for MemorizeService {
         let keys = self.store.keys_with_limit(Some(limit as usize));
 
         Ok(Response::new(KeysResponse { keys }))
+    }
+
+    async fn search_keys(
+        &self,
+        request: Request<SearchKeysRequest>,
+    ) -> Result<Response<SearchKeysResponse>, Status> {
+        let req = request.get_ref();
+        let limit = if req.limit == 0 { None } else { Some((req.limit.min(MAX_SEARCH_LIMIT)) as usize) };
+        let skip = if req.skip == 0 { None } else { Some(req.skip as usize) };
+        
+        tracing::debug!(
+            "SEARCH_KEYS prefix={:?} limit={:?} skip={:?}",
+            req.prefix,
+            limit,
+            skip
+        );
+
+        let (keys, total_count) = self.store.search_keys(&req.prefix, limit, skip);
+
+        Ok(Response::new(SearchKeysResponse {
+            keys,
+            total_count: total_count as u64,
+        }))
     }
 
     async fn contains(

@@ -88,7 +88,7 @@ pub mod proto {
 }
 
 use proto::memorize_client::MemorizeClient as GrpcClient;
-use proto::{ContainsRequest, DeleteRequest, GetRequest, KeysRequest, SetRequest};
+use proto::{ContainsRequest, DeleteRequest, GetRequest, KeysRequest, SearchKeysRequest, SetRequest};
 
 /// API key interceptor that adds authentication header to all requests
 #[derive(Clone)]
@@ -273,6 +273,29 @@ impl MemorizeClient {
         Ok(response.into_inner().deleted)
     }
 
+    /// Delete all entries from the cache.
+    ///
+    /// Returns the number of entries that were deleted.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use memorize_client::MemorizeClient;
+    /// # async fn example() -> Result<(), memorize_client::Error> {
+    /// # let client = MemorizeClient::connect("http://localhost:50051").await?;
+    /// let deleted_count = client.delete_all().await?;
+    /// println!("Deleted {} entries", deleted_count);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn delete_all(&self) -> Result<u64, Error> {
+        let mut client = self.inner.clone();
+        let response = client
+            .delete_all(proto::DeleteAllRequest {})
+            .await
+            .map_err(Error::from)?;
+        Ok(response.into_inner().deleted_count)
+    }
+
     /// Check if a key exists in the cache.
     ///
     /// # Arguments
@@ -327,6 +350,64 @@ impl MemorizeClient {
             .await
             .map_err(Error::from)?;
         Ok(response.into_inner().keys)
+    }
+
+    /// Search for keys matching a prefix with pagination support.
+    ///
+    /// Returns matching keys sorted alphabetically, along with the total count
+    /// of all matching keys (before pagination).
+    ///
+    /// # Arguments
+    /// * `prefix` - The prefix to match keys against (empty string matches all keys)
+    /// * `limit` - Maximum number of keys to return (default: 50, max: 250)
+    /// * `skip` - Number of matching keys to skip for pagination (default: 0)
+    ///
+    /// # Returns
+    /// A tuple of (matching_keys, total_count) where:
+    /// - `matching_keys` - Keys matching the prefix, sorted alphabetically
+    /// - `total_count` - Total number of keys matching the prefix (before skip/limit)
+    ///
+    /// # Performance Warning
+    ///
+    /// **This operation iterates through ALL entries on the server** to find matches.
+    /// It is intended for querying and debugging, not for high-frequency operations.
+    ///
+    /// For large datasets, this can be memory and CPU intensive. Use with caution
+    /// on stores with many entries. Consider using reasonable limits and avoid
+    /// calling this in tight loops or performance-critical paths.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use memorize_client::MemorizeClient;
+    /// # async fn example() -> Result<(), memorize_client::Error> {
+    /// # let client = MemorizeClient::connect("http://localhost:50051").await?;
+    /// // Find all keys starting with "user:"
+    /// let (keys, total) = client.search_keys("user:", None, None).await?;
+    /// println!("Found {} total matches, returning {}", total, keys.len());
+    ///
+    /// // Paginate through results (10 per page)
+    /// let (page1, _) = client.search_keys("user:", Some(10), Some(0)).await?;  // First 10
+    /// let (page2, _) = client.search_keys("user:", Some(10), Some(10)).await?; // Next 10
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn search_keys(
+        &self,
+        prefix: &str,
+        limit: Option<u32>,
+        skip: Option<u32>,
+    ) -> Result<(Vec<String>, u64), Error> {
+        let mut client = self.inner.clone();
+        let response = client
+            .search_keys(SearchKeysRequest {
+                prefix: prefix.to_string(),
+                limit: limit.unwrap_or(0),
+                skip: skip.unwrap_or(0),
+            })
+            .await
+            .map_err(Error::from)?;
+        let inner = response.into_inner();
+        Ok((inner.keys, inner.total_count))
     }
 }
 

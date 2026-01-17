@@ -13,8 +13,14 @@ service Memorize {
   // Delete a key
   rpc Delete(DeleteRequest) returns (DeleteResponse);
   
+  // Delete all keys
+  rpc DeleteAll(DeleteAllRequest) returns (DeleteAllResponse);
+  
   // List all keys (non-expired)
   rpc Keys(KeysRequest) returns (KeysResponse);
+  
+  // Search keys by prefix with pagination
+  rpc SearchKeys(SearchKeysRequest) returns (SearchKeysResponse);
   
   // Check if a key exists
   rpc Contains(ContainsRequest) returns (ContainsResponse);
@@ -48,6 +54,14 @@ message DeleteResponse {
   bool deleted = 1;  // true if key existed
 }
 
+message DeleteAllRequest {
+  // Empty - no parameters needed
+}
+
+message DeleteAllResponse {
+  uint64 deleted_count = 1;  // Number of entries deleted
+}
+
 message KeysRequest {
   optional string pattern = 1;  // Future: support pattern matching
   uint32 limit = 2;             // Maximum number of keys to return (0 = default limit)
@@ -55,6 +69,17 @@ message KeysRequest {
 
 message KeysResponse {
   repeated string keys = 1;
+}
+
+message SearchKeysRequest {
+  string prefix = 1;          // Prefix to match keys against (empty = match all)
+  uint32 limit = 2;           // Maximum keys to return (0 = default of 50)
+  uint32 skip = 3;            // Number of matching keys to skip for pagination
+}
+
+message SearchKeysResponse {
+  repeated string keys = 1;   // Matching keys, sorted alphabetically
+  uint64 total_count = 2;     // Total number of matches (before skip/limit)
 }
 
 message ContainsRequest {
