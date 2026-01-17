@@ -79,6 +79,12 @@ struct StoreInner {
 ///     store.set("key", "value", 300).unwrap(); // 5 minute TTL
 /// }
 /// ```
+/// Default limit for search_keys operations
+pub const DEFAULT_SEARCH_LIMIT: usize = 50;
+
+/// Maximum limit for search_keys operations (hard cap)
+pub const MAX_SEARCH_LIMIT: usize = 250;
+
 #[derive(Clone)]
 pub struct Store {
     inner: Arc<StoreInner>,
@@ -291,9 +297,25 @@ impl Store {
         }
     }
 
-    /// Deletes all entries from the store
+    /// Deletes all entries from the store.
     /// 
-    /// Returns the number of entries that were removed.
+    /// Returns the approximate number of entries that were removed.
+    /// 
+    /// # ⚠️ Warning: Destructive Operation
+    /// 
+    /// This operation:
+    /// - **Immediately removes ALL entries** from the store
+    /// - **Cannot be undone** - all data is permanently lost
+    /// - **Affects all concurrent readers/writers** - they will see an empty store
+    /// - Should be used with **extreme caution** in production environments
+    /// 
+    /// Consider using API key authentication to protect this operation in production.
+    /// 
+    /// # Note
+    /// 
+    /// The returned count may be slightly inaccurate in concurrent scenarios
+    /// where other threads add or remove entries between the count and clear operations.
+    /// This is acceptable for a cache where the count is informational.
     pub fn delete_all(&self) -> usize {
         let count = self.inner.data.len();
         self.inner.data.clear();
@@ -363,12 +385,6 @@ impl Store {
         }
     }
 
-    /// Default limit for search_keys operations
-    pub const DEFAULT_SEARCH_LIMIT: usize = 50;
-
-    /// Maximum limit for search_keys operations (hard cap)
-    pub const MAX_SEARCH_LIMIT: usize = 250;
-
     /// Searches for keys matching a prefix with pagination support.
     /// 
     /// Returns matching keys sorted alphabetically, along with the total count
@@ -411,15 +427,17 @@ impl Store {
     /// let (page2, _) = store.search_keys("user:", Some(10), Some(10)); // Next 10
     /// ```
     pub fn search_keys(&self, prefix: &str, limit: Option<usize>, skip: Option<usize>) -> (Vec<String>, usize) {
-        let limit = limit.unwrap_or(Self::DEFAULT_SEARCH_LIMIT).min(Self::MAX_SEARCH_LIMIT);
+        let limit = limit.unwrap_or(DEFAULT_SEARCH_LIMIT).min(MAX_SEARCH_LIMIT);
         let skip = skip.unwrap_or(0);
         
         // Collect all matching, non-expired keys
+        // Filter by prefix first to avoid cloning keys that don't match,
+        // then check expiration (which may be more expensive)
         let mut matching_keys: Vec<String> = self.inner.data
             .iter()
+            .filter(|entry| entry.key().starts_with(prefix))
             .filter(|entry| !entry.value().is_expired())
             .map(|entry| entry.key().clone())
-            .filter(|key| key.starts_with(prefix))
             .collect();
         
         // Sort alphabetically for deterministic pagination

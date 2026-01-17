@@ -2,6 +2,13 @@
 //!
 //! Tests the Memorize cache server using the memorize-client library.
 //! This proves that the Rust client binding works correctly.
+//!
+//! # Important: Test Isolation
+//!
+//! These integration tests use `delete_all` for cleanup between tests and are
+//! **not safe to run concurrently** against a shared server instance. Always run
+//! integration tests against a dedicated test server instance to avoid interference
+//! with other test suites or production data.
 
 use anyhow::Result;
 use futures::future::join_all;

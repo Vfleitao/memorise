@@ -1,4 +1,5 @@
-use memorize_core::{SetError, Store};
+use crate::auth::API_KEY_HEADER;
+use memorize_core::{SetError, Store, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT};
 use memorize_proto::memorize_server::Memorize;
 use memorize_proto::{
     ContainsRequest, ContainsResponse, DeleteRequest, DeleteResponse,
@@ -17,9 +18,6 @@ const MAX_VALUE_LENGTH: usize = 1024 * 1024;
 
 /// Default limit for keys listing
 const DEFAULT_KEYS_LIMIT: u32 = 10000;
-
-/// Maximum limit for search_keys operations (hard cap)
-const MAX_SEARCH_LIMIT: u32 = 250;
 
 /// Maximum allowed prefix length for search operations
 const MAX_PREFIX_LENGTH: usize = 256;
@@ -120,9 +118,16 @@ impl Memorize for MemorizeService {
 
     async fn delete_all(
         &self,
-        _request: Request<DeleteAllRequest>,
+        request: Request<DeleteAllRequest>,
     ) -> Result<Response<DeleteAllResponse>, Status> {
-        tracing::info!("DELETE_ALL");
+        // Check if API key authentication is being used
+        let has_api_key = request.metadata().get(API_KEY_HEADER).is_some();
+        
+        if has_api_key {
+            tracing::debug!("DELETE_ALL");
+        } else {
+            tracing::warn!("DELETE_ALL: Destructive operation invoked without API key - consider using API key authentication in production");
+        }
 
         let deleted_count = self.store.delete_all() as u64;
 
@@ -153,17 +158,22 @@ impl Memorize for MemorizeService {
             )));
         }
         
-        let limit = if req.limit == 0 { None } else { Some((req.limit.min(MAX_SEARCH_LIMIT)) as usize) };
+        // Handle limit: 0 = default, otherwise cap to max
+        let limit = if req.limit == 0 {
+            DEFAULT_SEARCH_LIMIT
+        } else {
+            (req.limit as usize).min(MAX_SEARCH_LIMIT)
+        };
         let skip = if req.skip == 0 { None } else { Some(req.skip as usize) };
         
         tracing::debug!(
-            "SEARCH_KEYS prefix={} limit={:?} skip={:?}",
+            "SEARCH_KEYS prefix={} limit={} skip={:?}",
             truncate_key_for_log(&req.prefix),
             limit,
             skip
         );
 
-        let (keys, total_count) = self.store.search_keys(&req.prefix, limit, skip);
+        let (keys, total_count) = self.store.search_keys(&req.prefix, Some(limit), skip);
 
         Ok(Response::new(SearchKeysResponse {
             keys,
@@ -191,15 +201,11 @@ mod tests {
     use memorize_core::StoreConfig;
     use std::time::Duration;
 
-    /// Helper to create a test store with a tokio runtime
+    /// Creates a test store configuration with a long cleanup interval.
+    /// 
+    /// This function should only be called from within a `#[tokio::test]` context,
+    /// as `Store::with_config` requires a tokio runtime for the background cleanup task.
     fn create_test_store() -> Store {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let rt = Box::leak(Box::new(rt));
-        let _guard = rt.enter();
-        
         let config = StoreConfig::default()
             .with_cleanup_interval(Duration::from_secs(3600));
         Store::with_config(config)
@@ -340,7 +346,63 @@ mod tests {
         assert!(result.is_ok());
         
         let response = result.unwrap().into_inner();
-        assert_eq!(response.keys.len(), MAX_SEARCH_LIMIT as usize);
+        assert_eq!(response.keys.len(), MAX_SEARCH_LIMIT);
         assert_eq!(response.total_count, 300);
+    }
+
+    #[tokio::test]
+    async fn test_delete_all_returns_count() {
+        let store = create_test_store();
+        
+        // Add some entries
+        store.set("key1", "value1", 60).unwrap();
+        store.set("key2", "value2", 60).unwrap();
+        store.set("key3", "value3", 60).unwrap();
+        
+        let service = MemorizeService::new(store.clone());
+        
+        let request = Request::new(DeleteAllRequest {});
+        let result = service.delete_all(request).await;
+        
+        assert!(result.is_ok());
+        let response = result.unwrap().into_inner();
+        assert_eq!(response.deleted_count, 3);
+        
+        // Verify store is empty
+        assert_eq!(store.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_delete_all_empty_store() {
+        let store = create_test_store();
+        let service = MemorizeService::new(store);
+        
+        let request = Request::new(DeleteAllRequest {});
+        let result = service.delete_all(request).await;
+        
+        assert!(result.is_ok());
+        let response = result.unwrap().into_inner();
+        assert_eq!(response.deleted_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_delete_all_u64_conversion() {
+        let store = create_test_store();
+        
+        // Add entries and verify the count converts correctly to u64
+        for i in 0..100 {
+            store.set(format!("key:{}", i), "value", 60).unwrap();
+        }
+        
+        let service = MemorizeService::new(store);
+        
+        let request = Request::new(DeleteAllRequest {});
+        let result = service.delete_all(request).await;
+        
+        assert!(result.is_ok());
+        let response = result.unwrap().into_inner();
+        // Verify it's a u64 and has correct value
+        let count: u64 = response.deleted_count;
+        assert_eq!(count, 100u64);
     }
 }

@@ -49,7 +49,7 @@
 //!
 //! ## JSON Serialization (requires `json` feature)
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use memorize_client::MemorizeClient;
 //! use serde::{Deserialize, Serialize};
 //!
@@ -275,7 +275,21 @@ impl MemorizeClient {
 
     /// Delete all entries from the cache.
     ///
-    /// Returns the number of entries that were deleted.
+    /// Returns the approximate number of entries that were deleted.
+    ///
+    /// # ⚠️ Warning: Destructive Operation
+    ///
+    /// This operation:
+    /// - **Immediately deletes ALL entries** from the cache
+    /// - **Cannot be undone** - all data is permanently lost
+    /// - **Affects all clients/services** using the same cache instance
+    /// - Should be used with **extreme caution** in production environments
+    ///
+    /// # Note
+    ///
+    /// The returned count may be slightly inaccurate in concurrent scenarios
+    /// where other operations occur simultaneously. This is acceptable for a cache
+    /// where the count is informational.
     ///
     /// # Example
     /// ```rust,no_run
