@@ -110,7 +110,7 @@ async fn test_keys_and_contains() -> Result<()> {
 
     // Test KEYS with pattern
     let pattern = format!("{}:*", prefix);
-    let found_keys = client.keys(Some(&pattern)).await?;
+    let found_keys = client.keys(Some(&pattern), None).await?;
     assert_eq!(found_keys.len(), 3, "Should find 3 keys matching pattern");
     tracing::info!("   KEYS({}) → {} keys", pattern, found_keys.len());
 
