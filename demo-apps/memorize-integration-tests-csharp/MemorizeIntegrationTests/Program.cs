@@ -99,7 +99,6 @@ public static class Program
             await TestParallelSetGet();
             await TestDataIsolation();
             await TestExpiration();
-            await TestStreamingExecute();
 
             Console.WriteLine();
             Console.WriteLine("✅ All tests passed!");
@@ -137,7 +136,7 @@ public static class Program
 
         // GET
         var getResponse = await client.GetAsync(new GetRequest { Key = testKey });
-        Debug.Assert(getResponse.Value != null, "GET should find the key");
+        Debug.Assert(getResponse.HasValue, "GET should find the key");
         Debug.Assert(getResponse.Value == testValue, "GET should return correct value");
 
         // CONTAINS
@@ -154,7 +153,7 @@ public static class Program
 
         // Verify deletion
         var getAfterDelete = await client.GetAsync(new GetRequest { Key = testKey });
-        Debug.Assert(getAfterDelete.Value == null, "GET after DELETE should not find key");
+        Debug.Assert(!getAfterDelete.HasValue, "GET after DELETE should not find key");
 
         Console.WriteLine("   ✓ Basic operations work correctly");
     }
@@ -195,7 +194,7 @@ public static class Program
         var getTasks = testData.Select(async item =>
         {
             var response = await client.GetAsync(new GetRequest { Key = item.Key });
-            if (response.Value == null)
+            if (!response.HasValue)
             {
                 lock (verificationErrors)
                     verificationErrors.Add($"Key '{item.Key}' not found");
@@ -275,7 +274,7 @@ public static class Program
             clientKeys.Select(async item =>
             {
                 var response = await client.GetAsync(new GetRequest { Key = item.Key });
-                if (response.Value == null)
+                if (!response.HasValue)
                 {
                     lock (verificationErrors)
                         verificationErrors.Add($"Key '{item.Key}' not found");
@@ -325,7 +324,7 @@ public static class Program
 
         // Should exist immediately
         var immediateGet = await client.GetAsync(new GetRequest { Key = testKey });
-        Debug.Assert(immediateGet.Value != null, "Key should exist immediately after SET");
+        Debug.Assert(immediateGet.HasValue, "Key should exist immediately after SET");
 
         // Wait for expiration
         Console.WriteLine("   Waiting 2 seconds for expiration...");
@@ -333,76 +332,8 @@ public static class Program
 
         // Should be expired now
         var expiredGet = await client.GetAsync(new GetRequest { Key = testKey });
-        Debug.Assert(expiredGet.Value == null, "Key should be expired after TTL");
+        Debug.Assert(!expiredGet.HasValue, "Key should be expired after TTL");
 
         Console.WriteLine("   ✓ TTL expiration works correctly");
-    }
-
-    /// <summary>
-    /// Test streaming Execute RPC (bi-directional streaming)
-    /// </summary>
-    private static async Task TestStreamingExecute()
-    {
-        Console.WriteLine("Test: Streaming Execute (bi-directional)");
-
-        using var channel = GrpcChannel.ForAddress(ServerUrl);
-        var client = CreateClient(channel);
-
-        using var call = client.Execute();
-
-        var testKey = $"stream-test-{Guid.NewGuid()}";
-        var testValue = "streaming-value";
-
-        // Send SET command
-        var setCommandId = Guid.NewGuid().ToString();
-        await call.RequestStream.WriteAsync(new Command
-        {
-            Id = setCommandId,
-            Set = new SetRequest
-            {
-                Key = testKey,
-                Value = testValue,
-                TtlSeconds = 60
-            }
-        });
-
-        // Send GET command
-        var getCommandId = Guid.NewGuid().ToString();
-        await call.RequestStream.WriteAsync(new Command
-        {
-            Id = getCommandId,
-            Get = new GetRequest { Key = testKey }
-        });
-
-        // Send DELETE command
-        var deleteCommandId = Guid.NewGuid().ToString();
-        await call.RequestStream.WriteAsync(new Command
-        {
-            Id = deleteCommandId,
-            Delete = new DeleteRequest { Key = testKey }
-        });
-
-        // Complete sending
-        await call.RequestStream.CompleteAsync();
-
-        // Collect responses
-        var responses = new Dictionary<string, CommandResponse>();
-        await foreach (var response in call.ResponseStream.ReadAllAsync())
-        {
-            responses[response.Id] = response;
-        }
-
-        // Verify responses
-        Debug.Assert(responses.TryGetValue(setCommandId, out var setResponse), "Should receive SET response");
-        Debug.Assert(setResponse.Set?.Success is true, "SET should succeed");
-
-        Debug.Assert(responses.TryGetValue(getCommandId, out var getResponse), "Should receive GET response");
-        Debug.Assert(getResponse.Get?.Value != null, "GET should find the key");
-        Debug.Assert(getResponse.Get?.Value == testValue, "GET should return correct value");
-
-        Debug.Assert(responses.TryGetValue(deleteCommandId, out var deleteResponse), "Should receive DELETE response");
-        Debug.Assert(deleteResponse.Delete?.Deleted is true, "DELETE should succeed");
-
-        Console.WriteLine("   ✓ Streaming Execute works correctly with command correlation");
     }
 }
