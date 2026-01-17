@@ -22,6 +22,9 @@ const DEFAULT_KEYS_LIMIT: u32 = 10000;
 /// Maximum allowed prefix length for search operations
 const MAX_PREFIX_LENGTH: usize = 256;
 
+/// Maximum allowed skip value for search pagination (prevents abuse)
+const MAX_SKIP: u32 = 10000;
+
 /// Truncates a key for safe logging (prevents leaking sensitive key data)
 fn truncate_key_for_log(key: &str) -> String {
     const MAX_LOG_LEN: usize = 16;
@@ -155,6 +158,14 @@ impl Memorize for MemorizeService {
             return Err(Status::invalid_argument(format!(
                 "Prefix exceeds maximum length of {} bytes",
                 MAX_PREFIX_LENGTH
+            )));
+        }
+        
+        // Validate skip value to prevent abuse
+        if req.skip > MAX_SKIP {
+            return Err(Status::invalid_argument(format!(
+                "Skip value exceeds maximum of {}",
+                MAX_SKIP
             )));
         }
         
@@ -404,5 +415,42 @@ mod tests {
         // Verify it's a u64 and has correct value
         let count: u64 = response.deleted_count;
         assert_eq!(count, 100u64);
+    }
+
+    #[tokio::test]
+    async fn test_search_keys_skip_too_large() {
+        let store = create_test_store();
+        let service = MemorizeService::new(store);
+        
+        // Request a skip value exceeding the maximum
+        let request = Request::new(SearchKeysRequest {
+            prefix: "test".to_string(),
+            limit: 10,
+            skip: MAX_SKIP + 1,
+        });
+        
+        let result = service.search_keys(request).await;
+        assert!(result.is_err());
+        
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("Skip"));
+        assert!(status.message().contains("maximum"));
+    }
+
+    #[tokio::test]
+    async fn test_search_keys_skip_at_limit() {
+        let store = create_test_store();
+        let service = MemorizeService::new(store);
+        
+        // Skip at exactly the limit should succeed
+        let request = Request::new(SearchKeysRequest {
+            prefix: "test".to_string(),
+            limit: 10,
+            skip: MAX_SKIP,
+        });
+        
+        let result = service.search_keys(request).await;
+        assert!(result.is_ok());
     }
 }

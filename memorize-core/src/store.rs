@@ -287,6 +287,7 @@ impl Store {
     /// Deletes a key from the store
     /// 
     /// Returns `true` if the key existed (regardless of expiration), `false` otherwise.
+    #[must_use = "returns whether the key existed"]
     pub fn delete(&self, key: &str) -> bool {
         if let Some((k, entry)) = self.inner.data.remove(key) {
             let entry_size = Self::entry_size(&k, entry.value());
@@ -333,11 +334,13 @@ impl Store {
     }
 
     /// Returns the number of entries in the store (including expired ones)
+    #[must_use]
     pub fn len(&self) -> usize {
         self.inner.data.len()
     }
 
     /// Returns `true` if the store is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.inner.data.is_empty()
     }
@@ -352,10 +355,25 @@ impl Store {
         self.inner.max_storage_bytes
     }
 
-    /// Checks if a key exists and is not expired
+    /// Checks if a key exists and is not expired.
+    /// 
+    /// Expired entries are lazily removed when checked.
+    #[must_use]
     pub fn contains_key(&self, key: &str) -> bool {
         match self.inner.data.get(key) {
-            Some(entry) => !entry.value().is_expired(),
+            Some(entry) => {
+                if entry.value().is_expired() {
+                    let entry_size = Self::entry_size(key, entry.value().value());
+                    // Drop the read reference before removing
+                    drop(entry);
+                    if self.inner.data.remove(key).is_some() {
+                        self.inner.current_size.fetch_sub(entry_size, Ordering::Relaxed);
+                    }
+                    false
+                } else {
+                    true
+                }
+            }
             None => false,
         }
     }
@@ -954,10 +972,10 @@ mod tests {
         assert_eq!(store.size_bytes(), 15);
         
         // Delete
-        store.delete("key1");
+        let _ = store.delete("key1");
         assert_eq!(store.size_bytes(), 10);
         
-        store.delete("key2");
+        let _ = store.delete("key2");
         assert_eq!(store.size_bytes(), 0);
     }
 
@@ -1128,7 +1146,7 @@ mod tests {
         assert!(matches!(result, Err(SetError::StorageFull { .. })));
         
         // Delete one entry (frees 9 bytes)
-        store.delete("key0");
+        let _ = store.delete("key0");
         assert_eq!(store.size_bytes(), 36);
         
         // Now we can add a new entry (36 + 12 = 48 <= 50)
