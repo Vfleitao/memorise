@@ -33,7 +33,7 @@ message GetResponse {
 message SetRequest {
   string key = 1;
   string value = 2;
-  uint64 ttl_seconds = 3;  // Time-to-live in seconds
+  uint64 ttl_seconds = 3;  // Time-to-live in seconds (0 = never expire)
 }
 
 message SetResponse {
@@ -50,6 +50,7 @@ message DeleteResponse {
 
 message KeysRequest {
   optional string pattern = 1;  // Future: support pattern matching
+  uint32 limit = 2;             // Maximum number of keys to return (0 = default limit)
 }
 
 message KeysResponse {

@@ -110,13 +110,29 @@ impl Store {
     /// Stores a value with the given key and TTL (time-to-live) in seconds
     /// 
     /// If the key already exists, the value is overwritten.
-    /// TTL is capped to prevent overflow (max ~100 years).
+    /// TTL of 0 means the entry never expires.
+    /// Non-zero TTL is capped to prevent overflow (max ~100 years).
     pub fn set(&self, key: impl Into<String>, value: impl Into<String>, ttl_seconds: u64) {
         // Cap TTL to ~100 years to prevent overflow when adding to Instant
         const MAX_TTL_SECONDS: u64 = 100 * 365 * 24 * 60 * 60; // ~100 years
-        let safe_ttl = ttl_seconds.min(MAX_TTL_SECONDS);
+        
+        // TTL of 0 means never expire (use max TTL)
+        let safe_ttl = if ttl_seconds == 0 {
+            MAX_TTL_SECONDS
+        } else {
+            ttl_seconds.min(MAX_TTL_SECONDS)
+        };
         
         let expires_at = Instant::now() + Duration::from_secs(safe_ttl);
+        let entry = Entry::new(value.into(), expires_at);
+        self.inner.data.insert(key.into(), entry);
+    }
+
+    /// Stores a value that expires immediately (for testing purposes)
+    #[cfg(test)]
+    fn set_expired(&self, key: impl Into<String>, value: impl Into<String>) {
+        // Set expiration to a time in the past
+        let expires_at = Instant::now() - Duration::from_secs(1);
         let entry = Entry::new(value.into(), expires_at);
         self.inner.data.insert(key.into(), entry);
     }
@@ -180,6 +196,22 @@ impl Store {
             .filter(|entry| !entry.value().is_expired())
             .map(|entry| entry.key().clone())
             .collect()
+    }
+
+    /// Returns keys that are not expired, with an optional limit
+    /// 
+    /// # Arguments
+    /// * `limit` - Maximum number of keys to return. None means no limit.
+    pub fn keys_with_limit(&self, limit: Option<usize>) -> Vec<String> {
+        let iter = self.inner.data
+            .iter()
+            .filter(|entry| !entry.value().is_expired())
+            .map(|entry| entry.key().clone());
+        
+        match limit {
+            Some(n) => iter.take(n).collect(),
+            None => iter.collect(),
+        }
     }
 
     /// Gracefully shuts down the background cleanup task
@@ -264,7 +296,7 @@ mod tests {
     #[test]
     fn test_expired_entry_returns_none() {
         let store = create_test_store();
-        store.set("key1", "value1", 0); // Expires immediately
+        store.set_expired("key1", "value1"); // Expires immediately
         
         // Small sleep to ensure expiration
         thread::sleep(Duration::from_millis(10));
@@ -279,8 +311,8 @@ mod tests {
             .with_cleanup_interval(Duration::from_secs(3600)); // 1 hour
         let store = create_test_store_with_config(config);
         
-        store.set("expired1", "value1", 0);
-        store.set("expired2", "value2", 0);
+        store.set_expired("expired1", "value1");
+        store.set_expired("expired2", "value2");
         store.set("valid", "value3", 60);
         
         thread::sleep(Duration::from_millis(10));
@@ -295,7 +327,7 @@ mod tests {
     fn test_contains_key() {
         let store = create_test_store();
         store.set("key1", "value1", 60);
-        store.set("expired", "value2", 0);
+        store.set_expired("expired", "value2");
         
         thread::sleep(Duration::from_millis(10));
         
@@ -309,7 +341,7 @@ mod tests {
         let store = create_test_store();
         store.set("key1", "value1", 60);
         store.set("key2", "value2", 60);
-        store.set("expired", "value3", 0);
+        store.set_expired("expired", "value3");
         
         thread::sleep(Duration::from_millis(10));
         
@@ -340,6 +372,20 @@ mod tests {
         
         // Should still be retrievable (won't expire for ~100 years)
         assert_eq!(store.get("key1"), Some("value1".to_string()));
+    }
+
+    #[test]
+    fn test_zero_ttl_means_never_expire() {
+        let store = create_test_store();
+        // TTL of 0 means the entry never expires
+        store.set("key1", "value1", 0);
+        
+        // Wait a bit to ensure it doesn't expire
+        thread::sleep(Duration::from_millis(50));
+        
+        // Should still be retrievable
+        assert_eq!(store.get("key1"), Some("value1".to_string()));
+        assert!(store.contains_key("key1"));
     }
 
     #[test]
@@ -458,7 +504,7 @@ mod tests {
         
         // Pre-populate with expiring and non-expiring data
         for i in 0..50 {
-            store.set(format!("expiring{}", i), "value", 0); // Expires immediately
+            store.set_expired(format!("expiring{}", i), "value"); // Expires immediately
             store.set(format!("persistent{}", i), "value", 60);
         }
         
@@ -520,8 +566,8 @@ mod tests {
         let store = Store::with_config(config);
         
         // Add some entries that expire quickly
-        store.set("expire1", "value1", 0);
-        store.set("expire2", "value2", 0);
+        store.set_expired("expire1", "value1");
+        store.set_expired("expire2", "value2");
         store.set("keep", "value3", 60);
         
         // Initially all 3 entries exist (even if expired)
@@ -555,6 +601,7 @@ mod tests {
             .with_cleanup_interval(Duration::from_millis(10));
         let store = Store::with_config(config);
         
+        // TTL=0 means never expire
         store.set("key1", "value1", 0);
         
         // Explicitly shutdown
@@ -563,8 +610,8 @@ mod tests {
         // Give some time for shutdown to process
         tokio::time::sleep(Duration::from_millis(50)).await;
         
-        // The entry might still be there since cleanup task was stopped
-        // (this test mainly ensures shutdown doesn't panic)
+        // The entry should still be there (TTL=0 means never expire)
+        assert_eq!(store.get("key1"), Some("value1".to_string()));
     }
 
     #[tokio::test]
@@ -578,7 +625,7 @@ mod tests {
         let store2 = Store::with_config(config2);
         
         // Add expiring entries to both
-        store1.set("expire", "value", 0);
+        store1.set_expired("expire", "value");
         store2.set("keep", "value", 60); // Non-expiring entry
         
         // Wait for store1's cleanup to run

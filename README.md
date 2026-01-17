@@ -202,20 +202,34 @@ See [memorize-proto/proto/memorize.proto](memorize-proto/proto/memorize.proto) f
 
 ## Running Tests
 
-```powershell
-# Run all tests (unit + integration)
-./build.ps1
+### Unit Tests
 
-# Run integration tests against a running server
+```powershell
+# Build and run all unit tests
+./build.ps1
+```
+
+### Integration Tests
+
+Integration tests require a running server:
+
+```powershell
+# Terminal 1: Start the server
+./dist/run-server.ps1
+
+# Terminal 2: Run all integration tests (Rust + C#)
 ./dist/run-tests.ps1
 
-# Or manually:
-# Terminal 1: Start server
-./dist/bin/memorize-server.exe
+# Or run with authentication
+./dist/run-server.ps1 -ApiKey "test-key"
+./dist/run-tests.ps1 -ApiKey "test-key"
+```
 
-# Terminal 2: Run tests
-./dist/bin/memorize-integration-tests.exe      # Rust
-./dist/bin/memorize-integration-tests-csharp.exe  # C#
+Or run the test binaries directly:
+
+```powershell
+./dist/bin/memorize-integration-tests.exe      # Rust tests
+./dist/bin/memorize-integration-tests-csharp.exe  # C# tests
 ```
 
 ## License

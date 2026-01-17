@@ -131,7 +131,7 @@ public sealed class MemorizeClient : IDisposable, IAsyncDisposable
     /// </summary>
     /// <param name="key">The key</param>
     /// <param name="value">The value to store</param>
-    /// <param name="ttlSeconds">Time-to-live in seconds</param>
+    /// <param name="ttlSeconds">Time-to-live in seconds (0 = never expire)</param>
     /// <param name="cancellationToken">Cancellation token</param>
     public async Task SetAsync(string key, string value, ulong ttlSeconds, CancellationToken cancellationToken = default)
     {
@@ -142,6 +142,17 @@ public sealed class MemorizeClient : IDisposable, IAsyncDisposable
         await _grpcClient.SetAsync(
             new Proto.SetRequest { Key = key, Value = value, TtlSeconds = ttlSeconds },
             cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Sets a value in the cache that never expires.
+    /// </summary>
+    /// <param name="key">The key</param>
+    /// <param name="value">The value to store</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    public Task SetWithoutExpirationAsync(string key, string value, CancellationToken cancellationToken = default)
+    {
+        return SetAsync(key, value, 0, cancellationToken);
     }
 
     /// <summary>
@@ -195,14 +206,15 @@ public sealed class MemorizeClient : IDisposable, IAsyncDisposable
     /// <summary>
     /// Gets all keys in the cache.
     /// </summary>
+    /// <param name="limit">Maximum number of keys to return (0 = server default of 10000)</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>A list of all keys</returns>
-    public async Task<IReadOnlyList<string>> GetKeysAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<string>> GetKeysAsync(uint limit = 0, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
 
         var response = await _grpcClient.KeysAsync(
-            new Proto.KeysRequest(),
+            new Proto.KeysRequest { Limit = limit },
             cancellationToken: cancellationToken);
 
         return response.Keys.ToList();
