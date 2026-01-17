@@ -72,8 +72,8 @@ message KeysResponse {
 }
 
 message SearchKeysRequest {
-  string prefix = 1;          // Prefix to match keys against (empty = match all)
-  uint32 limit = 2;           // Maximum keys to return (0 = default of 50)
+  string prefix = 1;          // Prefix to match keys against (empty = match all, max: 256 bytes)
+  uint32 limit = 2;           // Maximum keys to return (0 = default of 50, max: 250)
   uint32 skip = 3;            // Number of matching keys to skip for pagination
 }
 

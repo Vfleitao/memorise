@@ -260,7 +260,7 @@ public sealed class MemorizeClient : IDisposable, IAsyncDisposable
     /// calling this in tight loops or performance-critical paths.
     /// </para>
     /// </remarks>
-    /// <param name="prefix">The prefix to match keys against (empty string matches all keys)</param>
+    /// <param name="prefix">The prefix to match keys against (empty string matches all keys, max: 256 bytes)</param>
     /// <param name="limit">Maximum number of keys to return (0 = default of 50, max: 250)</param>
     /// <param name="skip">Number of matching keys to skip for pagination (default: 0)</param>
     /// <param name="cancellationToken">Cancellation token</param>

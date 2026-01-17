@@ -358,7 +358,7 @@ impl MemorizeClient {
     /// of all matching keys (before pagination).
     ///
     /// # Arguments
-    /// * `prefix` - The prefix to match keys against (empty string matches all keys)
+    /// * `prefix` - The prefix to match keys against (empty string matches all keys, max: 256 bytes)
     /// * `limit` - Maximum number of keys to return (default: 50, max: 250)
     /// * `skip` - Number of matching keys to skip for pagination (default: 0)
     ///
