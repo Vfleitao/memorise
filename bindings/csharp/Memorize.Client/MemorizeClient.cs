@@ -196,8 +196,26 @@ public sealed class MemorizeClient : IDisposable, IAsyncDisposable
     /// <summary>
     /// Deletes all entries from the cache.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>⚠️ Warning: Destructive Operation</strong>
+    /// </para>
+    /// <para>
+    /// This operation:
+    /// <list type="bullet">
+    /// <item><description><strong>Immediately deletes ALL entries</strong> from the cache</description></item>
+    /// <item><description><strong>Cannot be undone</strong> - all data is permanently lost</description></item>
+    /// <item><description><strong>Affects all clients/services</strong> using the same cache instance</description></item>
+    /// <item><description>Should be used with <strong>extreme caution</strong> in production environments</description></item>
+    /// </list>
+    /// </para>
+    /// <para>
+    /// The returned count may be slightly inaccurate in concurrent scenarios where other
+    /// operations occur simultaneously. This is acceptable for a cache where the count is informational.
+    /// </para>
+    /// </remarks>
     /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>The number of entries that were deleted</returns>
+    /// <returns>The approximate number of entries that were deleted</returns>
     public async Task<ulong> DeleteAllAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();

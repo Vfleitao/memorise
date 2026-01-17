@@ -5,6 +5,17 @@ using Memorize.Client;
 /// Integration tests for the Memorize cache server using the Memorize.Client library.
 /// Demonstrates how simple the client is to use while thoroughly testing the server.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <strong>Important: Test Isolation</strong>
+/// </para>
+/// <para>
+/// These integration tests use <c>DeleteAllAsync</c> for cleanup between tests and are
+/// <strong>not safe to run concurrently</strong> against a shared server instance. Always run
+/// integration tests against a dedicated test server instance to avoid interference
+/// with other test suites or production data.
+/// </para>
+/// </remarks>
 public static class Program
 {
     public static async Task Main(string[] args)
