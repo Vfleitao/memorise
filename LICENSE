@@ -1,0 +1,137 @@
+Memorize Source Available License (MSAL) v1.0
+
+Copyright (c) 2026 Memorize Contributors
+
+=============================================================================
+TERMS AND CONDITIONS
+=============================================================================
+
+1. DEFINITIONS
+
+   "Software" refers to the Memorize source code, documentation, and any
+   associated materials in this repository.
+
+   "Derivative Work" means any modification, enhancement, bug fix, or feature
+   addition to the Software.
+
+   "Cache Service Business" means a business that sells caching, key-value
+   storage, or similar data storage services as its primary product offering,
+   comparable to Redis Cloud, Amazon ElastiCache, Azure Cache, or similar.
+
+   "Internal Use" means use of the Software within your organization or as
+   a component of your applications, where caching is not the product being sold.
+
+2. GRANT OF RIGHTS
+
+   Subject to the terms of this License, you are granted a perpetual,
+   worldwide, non-exclusive, royalty-free license to:
+
+   a) Use the Software for any purpose, including commercial Internal Use.
+
+   b) Copy, modify, and create Derivative Works of the Software.
+
+   c) Distribute the Software and Derivative Works, provided you comply
+      with the Contribution and Attribution requirements below.
+
+3. CONTRIBUTION REQUIREMENT
+
+   If you create any Derivative Work that adds features, fixes bugs, or
+   improves the Software in any way, you must:
+
+   a) Make a good-faith effort to contribute those changes back to the
+      original project by submitting a pull request or equivalent
+      contribution within 90 days of deployment to production use.
+
+   b) License your contributions under the same terms as this License.
+
+   This requirement applies to modifications you make, not to separate
+   software that merely interfaces with or uses the Software as a dependency.
+
+4. ATTRIBUTION REQUIREMENT
+
+   Any use or distribution of the Software or Derivative Works must include:
+
+   a) This License file in its entirety.
+
+   b) Prominent attribution stating: "Powered by Memorize" or equivalent,
+      visible in documentation, about pages, or startup logs.
+
+   c) A link to the original project repository where reasonably practical.
+
+5. COMMERCIAL CACHE SERVICE RESTRICTION
+
+   You may NOT offer the Software or any Derivative Work as a standalone
+   cache service product without a separate commercial license agreement.
+
+   This restriction applies specifically to businesses whose product IS a
+   caching service (competing with Redis, Memcached, or similar offerings).
+
+   Examples requiring a commercial license:
+   - Offering "Memorize Cache" as a managed cloud service (like Azure Cache)
+   - Selling Memorize as a caching platform or infrastructure product
+   - Operating a caching-as-a-service business using this Software
+
+   Examples that DO NOT require a commercial license:
+   - Building an e-commerce app that uses Memorize as its cache layer
+   - Creating a SaaS product that uses Memorize internally
+   - Selling software that includes Memorize as a component
+   - Any business where caching is not the product being sold
+
+   In short: if you're selling an application that USES a cache, you're fine.
+   If you're selling the cache itself as a service, contact us for a license.
+
+   To obtain a commercial license, contact the project maintainers.
+
+6. NO WARRANTY AND LIMITATION OF LIABILITY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+   THE AUTHORS AND COPYRIGHT HOLDERS EXPRESSLY DISCLAIM ALL LIABILITY FOR:
+
+   a) Any direct, indirect, incidental, special, exemplary, or consequential
+      damages arising from the use or inability to use the Software, including
+      but not limited to: loss of data, loss of profits, business interruption,
+      or any other commercial damages or losses.
+
+   b) Any security vulnerabilities, bugs, or defects in the Software, whether
+      known or unknown at the time of use. Users are solely responsible for
+      evaluating the security and suitability of the Software for their needs.
+
+   c) Any data breaches, unauthorized access, or security incidents that may
+      occur while using the Software. It is the user's responsibility to
+      implement appropriate security measures and conduct security audits.
+
+   d) Any damages resulting from third-party actions, including but not limited
+      to hacking, exploitation of vulnerabilities, or malicious use.
+
+   BY USING THIS SOFTWARE, YOU ACKNOWLEDGE THAT YOU HAVE READ THIS DISCLAIMER,
+   UNDERSTAND IT, AND AGREE TO BE BOUND BY ITS TERMS. YOU ASSUME ALL RISK
+   ASSOCIATED WITH THE USE OF THIS SOFTWARE.
+
+   Users are strongly encouraged to:
+   - Conduct their own security assessments before deployment
+   - Keep the Software updated to the latest version
+   - Implement defense-in-depth security practices
+   - Not expose the Software to untrusted networks without proper safeguards
+
+7. TERMINATION
+
+   This License automatically terminates if you fail to comply with its terms.
+   Upon termination, you must cease all use and distribution of the Software.
+
+=============================================================================
+SUMMARY (not legally binding)
+=============================================================================
+
+✓ Free to use in your own applications and products
+✓ Free to use commercially (if caching isn't your product)
+✓ Free to modify and distribute
+✓ Improvements must be contributed back
+✓ Attribution required
+
+✗ Cannot use to build a competing cache service business without a license
+
+For commercial cache service licensing, contact: [your-email@example.com]
+
