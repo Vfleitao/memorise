@@ -220,5 +220,14 @@ See [memorize-proto/proto/memorize.proto](memorize-proto/proto/memorize.proto) f
 
 ## License
 
-MIT
+This project is licensed under the **Memorize Source Available License (MSAL)**.
+
+**In short:**
+- ✅ Free to use in your applications (even commercial ones)
+- ✅ Free to modify and distribute
+- ✅ Improvements must be contributed back to the project
+- ✅ Attribution required
+- ❌ Cache service businesses (like Azure Redis Cache) need a separate license
+
+See [LICENSE](LICENSE) for full terms.
 
