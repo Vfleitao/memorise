@@ -1,6 +1,6 @@
 # Memorize
 
-A Redis like in-memory cache server with gRPC API, written in Rust.
+A Redis-like in-memory cache server with gRPC API, written in Rust.
 
 ## Features
 
