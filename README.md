@@ -1,6 +1,6 @@
 # Memorize
 
-A high-performance, Redis-like in-memory cache server with gRPC API, written in Rust.
+A Redis-like in-memory cache server with gRPC API, written in Rust.
 
 ## Features
 
@@ -259,4 +259,9 @@ This project is licensed under the **Memorize Source Available License (MSAL)**.
 - ❌ Cache service businesses (like Azure Redis Cache) need a separate license
 
 See [LICENSE](LICENSE) for full terms.
+
+---
+
+> [!NOTE]
+> This project was built using **AI-Assisted Development** — human-driven design, architecture, and code review with AI as a productivity tool. Not vibe-coding.
 
