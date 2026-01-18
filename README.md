@@ -11,6 +11,9 @@ A Redis-like in-memory cache server with gRPC API, written in Rust.
 - **Docker Ready**: Multi-stage build for minimal ~25MB container image
 - **Cross-Platform**: Runs on Windows, Linux, and macOS
 
+> [!IMPORTANT]
+> Memorize is a **simple, single-node cache** designed for straightforward read/write operations. It does not support clustering, replication, or persistence. If you need those features, consider Redis or similar solutions.
+
 ## Architecture
 
 ```
