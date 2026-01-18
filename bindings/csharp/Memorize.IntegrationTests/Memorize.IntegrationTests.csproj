@@ -8,12 +8,7 @@
     <AssemblyName>memorize-integration-tests-csharp</AssemblyName>
   </PropertyGroup>
 
-  <!-- Use NuGet package in Release mode, project reference in Debug -->
-  <ItemGroup Condition="'$(Configuration)' == 'Release'">
-    <PackageReference Include="Memorize.Client" Version="1.0.0" />
-  </ItemGroup>
-
-  <ItemGroup Condition="'$(Configuration)' != 'Release'">
+  <ItemGroup>
     <ProjectReference Include="..\Memorize.Client\Memorize.Client.csproj" />
   </ItemGroup>
 
