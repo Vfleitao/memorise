@@ -41,7 +41,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_storage_mb(max_storage_mb);
     let store = Store::with_config(config);
 
-    let service = MemorizeService::new(store);
+    let auth_enabled = api_key.is_some();
+    let service = MemorizeService::new(store, auth_enabled);
 
     tracing::info!("🚀 Memorize gRPC server listening on {}", addr);
     tracing::info!("   Cleanup interval: {}s", cleanup_interval);

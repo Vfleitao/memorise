@@ -9,6 +9,22 @@
 //! - Background cleanup task for each store instance
 //! - All data stored as strings
 //!
+//! ## TTL Semantics
+//!
+//! When setting a value, the TTL (time-to-live) parameter controls expiration:
+//!
+//! - **TTL = 0**: The entry **never expires**. Internally implemented as ~100 years.
+//! - **TTL > 0**: The entry expires after the specified number of seconds.
+//!
+//! This design avoids `Option<Instant>` complexity while being effectively infinite
+//! for practical purposes.
+//!
+//! ## Tokio Runtime Requirement
+//!
+//! This library requires a Tokio runtime to be active when creating a `Store`,
+//! as it spawns a background task for periodic cleanup of expired entries.
+//! If no runtime is available, construction will panic with a descriptive error.
+//!
 //! ## Example
 //!
 //! ```rust,no_run
@@ -27,6 +43,9 @@
 //!
 //!     // Store a value with 60 second TTL
 //!     store.set("user:123", "John Doe", 60).unwrap();
+//!
+//!     // Store a value that never expires (TTL = 0)
+//!     store.set("config:setting", "value", 0).unwrap();
 //!
 //!     // Retrieve the value
 //!     if let Some(value) = store.get("user:123") {

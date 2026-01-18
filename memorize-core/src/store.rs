@@ -93,15 +93,46 @@ pub struct Store {
 impl Store {
     /// Creates a new store with default configuration
     /// 
-    /// **Note:** Requires a tokio runtime to be available for the background cleanup task.
+    /// # Panics
+    /// 
+    /// Panics if called outside of a Tokio runtime context. The store requires
+    /// a runtime to spawn its background cleanup task.
     pub fn new() -> Self {
         Self::with_config(StoreConfig::default())
     }
 
     /// Creates a new store with custom configuration
     /// 
-    /// **Note:** Requires a tokio runtime to be available for the background cleanup task.
+    /// # Panics
+    /// 
+    /// Panics if called outside of a Tokio runtime context. The store requires
+    /// a runtime to spawn its background cleanup task.
+    /// 
+    /// # Example
+    /// 
+    /// ```rust,no_run
+    /// use memorize_core::{Store, StoreConfig};
+    /// use std::time::Duration;
+    /// 
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let config = StoreConfig::default()
+    ///         .with_cleanup_interval(Duration::from_secs(30));
+    ///     let store = Store::with_config(config);
+    /// }
+    /// ```
     pub fn with_config(config: StoreConfig) -> Self {
+        // Verify that a Tokio runtime is available before proceeding.
+        // This provides a clear error message instead of a cryptic panic from tokio::spawn.
+        if tokio::runtime::Handle::try_current().is_err() {
+            panic!(
+                "memorize_core::Store requires a Tokio runtime. \
+                 Ensure you are calling Store::new() or Store::with_config() \
+                 from within a #[tokio::main] or #[tokio::test] context, \
+                 or from code running on a Tokio runtime."
+            );
+        }
+        
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         
         let inner = Arc::new(StoreInner {
@@ -173,8 +204,16 @@ impl Store {
     /// Stores a value with the given key and TTL (time-to-live) in seconds
     /// 
     /// If the key already exists, the value is overwritten.
-    /// TTL of 0 means the entry never expires.
-    /// Non-zero TTL is capped to prevent overflow (max ~100 years).
+    /// 
+    /// # TTL Semantics
+    /// 
+    /// - **TTL of 0** means the entry **never expires**. Internally this is implemented
+    ///   as an expiration time approximately 100 years in the future. This avoids the
+    ///   complexity of `Option<Instant>` while being effectively infinite for practical
+    ///   purposes. The entry will still be subject to manual deletion or server restart.
+    /// 
+    /// - **Non-zero TTL** is the time-to-live in seconds. Values are capped at ~100 years
+    ///   to prevent arithmetic overflow when calculating expiration times.
     /// 
     /// # Errors
     /// 
@@ -216,10 +255,14 @@ impl Store {
             }
         }
         
-        // Cap TTL to ~100 years to prevent overflow when adding to Instant
+        // Cap TTL to ~100 years to prevent overflow when adding to Instant.
+        // This value is used both as a maximum for explicit TTLs and as the
+        // "never expire" duration when TTL is 0.
         const MAX_TTL_SECONDS: u64 = 100 * 365 * 24 * 60 * 60; // ~100 years
         
-        // TTL of 0 means never expire (use max TTL)
+        // TTL of 0 means "never expire" - we implement this as expiring in ~100 years
+        // rather than using Option<Instant> to keep the data structure simple and
+        // avoid branching in hot paths. For all practical purposes, this is infinite.
         let safe_ttl = if ttl_seconds == 0 {
             MAX_TTL_SECONDS
         } else {

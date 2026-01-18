@@ -1,4 +1,3 @@
-use crate::auth::API_KEY_HEADER;
 use memorize_core::{SetError, Store, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT};
 use memorize_proto::memorize_server::Memorize;
 use memorize_proto::{
@@ -63,11 +62,18 @@ fn validate_value(value: &str) -> Result<(), Status> {
 /// The gRPC service implementation
 pub struct MemorizeService {
     store: Store,
+    /// Whether API key authentication is enabled on this server
+    auth_enabled: bool,
 }
 
 impl MemorizeService {
-    pub fn new(store: Store) -> Self {
-        Self { store }
+    /// Creates a new service instance.
+    /// 
+    /// # Arguments
+    /// * `store` - The backing store for cache data
+    /// * `auth_enabled` - Whether API key authentication is configured on the server
+    pub fn new(store: Store, auth_enabled: bool) -> Self {
+        Self { store, auth_enabled }
     }
 }
 
@@ -121,15 +127,13 @@ impl Memorize for MemorizeService {
 
     async fn delete_all(
         &self,
-        request: Request<DeleteAllRequest>,
+        _request: Request<DeleteAllRequest>,
     ) -> Result<Response<DeleteAllResponse>, Status> {
-        // Check if API key authentication is being used
-        let has_api_key = request.metadata().get(API_KEY_HEADER).is_some();
-        
-        if has_api_key {
+        // Log based on whether authentication is configured on the server
+        if self.auth_enabled {
             tracing::debug!("DELETE_ALL");
         } else {
-            tracing::warn!("DELETE_ALL: Destructive operation invoked without API key - consider using API key authentication in production");
+            tracing::warn!("DELETE_ALL: Destructive operation invoked without API key authentication - consider enabling MEMORIZE_API_KEY in production");
         }
 
         let deleted_count = self.store.delete_all() as u64;
@@ -282,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn test_search_keys_prefix_too_long() {
         let store = create_test_store();
-        let service = MemorizeService::new(store);
+        let service = MemorizeService::new(store, false);
         
         // Create a prefix that exceeds the limit
         let long_prefix = "x".repeat(MAX_PREFIX_LENGTH + 1);
@@ -305,7 +309,7 @@ mod tests {
     #[tokio::test]
     async fn test_search_keys_prefix_at_limit() {
         let store = create_test_store();
-        let service = MemorizeService::new(store);
+        let service = MemorizeService::new(store, false);
         
         // Create a prefix exactly at the limit - should succeed
         let prefix_at_limit = "x".repeat(MAX_PREFIX_LENGTH);
@@ -322,7 +326,7 @@ mod tests {
     #[tokio::test]
     async fn test_search_keys_empty_prefix_allowed() {
         let store = create_test_store();
-        let service = MemorizeService::new(store);
+        let service = MemorizeService::new(store, false);
         
         // Empty prefix should be allowed (matches all keys)
         let request = Request::new(SearchKeysRequest {
@@ -344,7 +348,7 @@ mod tests {
             store.set(format!("key:{:03}", i), "value", 60).unwrap();
         }
         
-        let service = MemorizeService::new(store);
+        let service = MemorizeService::new(store, false);
         
         // Request a limit higher than MAX_SEARCH_LIMIT
         let request = Request::new(SearchKeysRequest {
@@ -370,7 +374,7 @@ mod tests {
         store.set("key2", "value2", 60).unwrap();
         store.set("key3", "value3", 60).unwrap();
         
-        let service = MemorizeService::new(store.clone());
+        let service = MemorizeService::new(store.clone(), false);
         
         let request = Request::new(DeleteAllRequest {});
         let result = service.delete_all(request).await;
@@ -386,7 +390,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_all_empty_store() {
         let store = create_test_store();
-        let service = MemorizeService::new(store);
+        let service = MemorizeService::new(store, false);
         
         let request = Request::new(DeleteAllRequest {});
         let result = service.delete_all(request).await;
@@ -405,7 +409,7 @@ mod tests {
             store.set(format!("key:{}", i), "value", 60).unwrap();
         }
         
-        let service = MemorizeService::new(store);
+        let service = MemorizeService::new(store, false);
         
         let request = Request::new(DeleteAllRequest {});
         let result = service.delete_all(request).await;
@@ -420,7 +424,7 @@ mod tests {
     #[tokio::test]
     async fn test_search_keys_skip_too_large() {
         let store = create_test_store();
-        let service = MemorizeService::new(store);
+        let service = MemorizeService::new(store, false);
         
         // Request a skip value exceeding the maximum
         let request = Request::new(SearchKeysRequest {
@@ -441,7 +445,7 @@ mod tests {
     #[tokio::test]
     async fn test_search_keys_skip_at_limit() {
         let store = create_test_store();
-        let service = MemorizeService::new(store);
+        let service = MemorizeService::new(store, false);
         
         // Skip at exactly the limit should succeed
         let request = Request::new(SearchKeysRequest {

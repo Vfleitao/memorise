@@ -1,6 +1,6 @@
 [package]
 name = "memorize-client"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 description = "A high-level Rust client for the Memorize in-memory cache"
 license = "MIT"
