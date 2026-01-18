@@ -14,6 +14,41 @@ A Redis-like in-memory cache server with gRPC API, written in Rust.
 > [!IMPORTANT]
 > Memorize is a **simple, single-node cache** designed for straightforward read/write operations. It does not support clustering, replication, or persistence. If you need those features, consider Redis or similar solutions.
 
+## Performance
+
+Benchmarks comparing Memorize vs Redis (StackExchange.Redis) on Windows 11, .NET 8.0.
+
+### Docker-to-Docker (Fair Comparison)
+
+Both servers running in Docker containers, benchmarks connecting from host:
+
+| Operation | Memorize | Redis | Comparison |
+|-----------|----------|-------|------------|
+| **SET** | 233-320 μs | 240-290 μs | Similar |
+| **GET** | 241-251 μs | 205-256 μs | Similar |
+| **SET+GET roundtrip** | 660-724 μs | 603-667 μs | Similar |
+
+### Concurrent Operations (100 parallel, Docker)
+
+| Operation | Memorize | Redis | Notes |
+|-----------|----------|-------|-------|
+| **SET (100 concurrent)** | 2.5 ms | 372-500 μs | Redis pipelining more efficient |
+| **GET (100 concurrent)** | 5.1 ms | 812-925 μs | Redis optimized for bulk ops |
+| **Mixed SET/GET** | 10.8 ms | 422-512 μs | |
+
+### Native Server Performance
+
+When running Memorize server natively (not in Docker), latency improves significantly:
+
+| Operation | Memorize (Native) | Notes |
+|-----------|------------------|-------|
+| **SET** | ~79 μs | **3x faster than Docker** |
+| **GET** | ~68 μs | **3.5x faster than Docker** |
+| **SET+GET roundtrip** | ~200 μs | |
+
+> [!NOTE]
+> **Key Takeaway**: Docker networking adds ~150-200μs latency per operation. For lowest latency, run Memorize natively alongside your application. Redis has a highly optimized binary protocol that excels at concurrent/pipelined operations, while Memorize provides simpler deployment and comparable single-operation performance.
+
 ## Architecture
 
 ```
@@ -46,21 +81,21 @@ memorize/
 
 ### Using Docker (Recommended)
 
-```bash
-# Build the image
-docker build -t memorize-server .
+The official image is available on GitHub Container Registry:
 
+```bash
+docker pull ghcr.io/vfleitao/memorise:latest
+```
+
+```bash
 # Run with default settings (no authentication, 100MB limit)
-docker run -d -p 50051:50051 --name memorize memorize-server
+docker run -d -p 50051:50051 --name memorize ghcr.io/vfleitao/memorise:latest
 
 # Run with API key authentication
-docker run -d -p 50051:50051 -e MEMORIZE_API_KEY=your-secret-key memorize-server
+docker run -d -p 50051:50051 -e MEMORIZE_API_KEY=your-secret-key ghcr.io/vfleitao/memorise:latest
 
 # Run with custom storage limit (500MB)
-docker run -d -p 50051:50051 -e MEMORIZE_MAX_STORAGE_MB=500 memorize-server
-
-# Run with unlimited storage (use with caution!)
-docker run -d -p 50051:50051 -e MEMORIZE_MAX_STORAGE_MB=0 memorize-server
+docker run -d -p 50051:50051 -e MEMORIZE_MAX_STORAGE_MB=500 ghcr.io/vfleitao/memorise:latest
 
 # Run with all custom settings
 docker run -d -p 50051:50051 \
@@ -69,7 +104,72 @@ docker run -d -p 50051:50051 \
   -e MEMORIZE_CLEANUP_INTERVAL=30 \
   -e MEMORIZE_MAX_STORAGE_MB=500 \
   -e MEMORIZE_API_KEY=my-secret \
-  memorize-server
+  ghcr.io/vfleitao/memorise:latest
+```
+
+### Deploying to Azure
+
+> [!WARNING]
+> **Security Notice**: Memorize does not provide TLS/SSL encryption. It is designed to run **inside a private network (VNet)** where only your application can access it. For production deployments:
+> - Deploy within a Virtual Network (VNet) with no public IP
+> - Use Azure Private Endpoints or internal load balancers
+> - If public access is required, place behind an API Gateway or reverse proxy that handles TLS termination
+> - Always enable API key authentication (`MEMORIZE_API_KEY`)
+
+#### Azure Container Instances (with VNet)
+
+```bash
+# Create a resource group
+az group create --name memorize-rg --location eastus
+
+# Create a VNet and subnet for the container
+az network vnet create \
+  --resource-group memorize-rg \
+  --name memorize-vnet \
+  --address-prefix 10.0.0.0/16 \
+  --subnet-name memorize-subnet \
+  --subnet-prefix 10.0.0.0/24
+
+# Deploy the container (private IP only - no public access)
+az container create \
+  --resource-group memorize-rg \
+  --name memorize-cache \
+  --image ghcr.io/vfleitao/memorise:latest \
+  --ports 50051 \
+  --cpu 1 \
+  --memory 1 \
+  --environment-variables \
+    MEMORIZE_MAX_STORAGE_MB=500 \
+    MEMORIZE_API_KEY=your-secret-key \
+  --vnet memorize-vnet \
+  --subnet memorize-subnet \
+  --ip-address private
+
+# Get the private IP address (use this from your app in the same VNet)
+az container show \
+  --resource-group memorize-rg \
+  --name memorize-cache \
+  --query ipAddress.ip \
+  --output tsv
+```
+
+#### Docker Compose (Local Development)
+
+```yaml
+# docker-compose.yml
+services:
+  memorize:
+    image: ghcr.io/vfleitao/memorise:latest
+    ports:
+      - "50051:50051"
+    environment:
+      - MEMORIZE_MAX_STORAGE_MB=500
+      - MEMORIZE_API_KEY=dev-secret-key
+    restart: unless-stopped
+```
+
+```bash
+docker-compose up -d
 ```
 
 #### Docker Environment Variables
@@ -86,8 +186,8 @@ docker run -d -p 50051:50051 \
 
 ```powershell
 # Clone the repository
-git clone https://github.com/your-username/memorize.git
-cd memorize
+git clone https://github.com/Vfleitao/memorise.git
+cd memorise
 
 # Build everything (server, tests, bindings, NuGet package)
 ./build.ps1
@@ -143,7 +243,11 @@ $env:MEMORIZE_API_KEY = "my-secret"
 
 ### C# (.NET)
 
-Install the NuGet package or reference the built `.nupkg`:
+Install from [NuGet](https://www.nuget.org/packages/Memorize.Client):
+
+```bash
+dotnet add package Memorize.Client
+```
 
 ```csharp
 using Memorize.Client;
