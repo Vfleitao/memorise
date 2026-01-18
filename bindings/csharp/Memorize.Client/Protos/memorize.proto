@@ -39,7 +39,7 @@ message GetResponse {
 message SetRequest {
   string key = 1;
   string value = 2;
-  uint64 ttl_seconds = 3;  // Time-to-live in seconds (0 = never expire)
+  uint64 ttl_seconds = 3;  // Time-to-live in seconds. 0 = never expire (implemented as ~100 years)
 }
 
 message SetResponse {

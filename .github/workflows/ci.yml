@@ -10,8 +10,11 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Run Unit Tests
+  # =============================================================================
+  # Build and Unit Tests
+  # =============================================================================
+  build:
+    name: Build & Unit Tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -24,17 +27,329 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            memorize-core/target
+            target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run tests
-        working-directory: memorize-core
-        run: cargo test --verbose
+      - name: Build memorize-core
+        run: cargo build --release --manifest-path memorize-core/Cargo.toml
+
+      - name: Build memorize-proto
+        run: cargo build --release --manifest-path memorize-proto/Cargo.toml
+
+      - name: Build memorize-server
+        run: cargo build --release --manifest-path memorize-server/Cargo.toml
+
+      - name: Build memorize-client (Rust)
+        run: cargo build --release --manifest-path bindings/rust/memorize-client/Cargo.toml
+
+      - name: Run memorize-core unit tests
+        run: cargo test --release --manifest-path memorize-core/Cargo.toml --verbose
+
+      - name: Run memorize-server unit tests
+        run: cargo test --release --manifest-path memorize-server/Cargo.toml --verbose
+
+      - name: Upload server binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: memorize-server
+          path: memorize-server/target/release/memorize-server
+          retention-days: 1
+
+      - name: Upload Rust integration tests binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-integration-tests
+          path: bindings/rust/memorize-integration-tests/target/release/memorize-integration-tests
+          retention-days: 1
+
+  # =============================================================================
+  # Build C# Bindings
+  # =============================================================================
+  build-csharp:
+    name: Build C# Bindings
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore bindings/csharp/Memorize.Client/Memorize.Client.csproj
+
+      - name: Build Memorize.Client
+        run: dotnet build bindings/csharp/Memorize.Client/Memorize.Client.csproj --configuration Release --no-restore
+
+      - name: Build Integration Tests
+        run: dotnet build bindings/csharp/Memorize.IntegrationTests/Memorize.IntegrationTests.csproj --configuration Release
+
+      - name: Upload C# integration tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: csharp-integration-tests
+          path: bindings/csharp/Memorize.IntegrationTests/bin/Release/net8.0/
+          retention-days: 1
+
+  # =============================================================================
+  # Integration Tests (Rust)
+  # =============================================================================
+  integration-tests-rust:
+    name: Integration Tests (Rust)
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download server binary
+        uses: actions/download-artifact@v4
+        with:
+          name: memorize-server
+          path: ./server
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Build Rust integration tests
+        run: cargo build --release --manifest-path bindings/rust/memorize-integration-tests/Cargo.toml
+
+      - name: Make server executable
+        run: chmod +x ./server/memorize-server
+
+      - name: Start Memorize server
+        run: |
+          ./server/memorize-server &
+          echo $! > server.pid
+          # Wait for server to be ready
+          for i in {1..30}; do
+            if nc -z localhost 50051 2>/dev/null; then
+              echo "Server is ready"
+              break
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 1
+          done
+        env:
+          MEMORIZE_HOST: 127.0.0.1
+          MEMORIZE_PORT: 50051
+
+      - name: Run Rust integration tests
+        run: ./bindings/rust/memorize-integration-tests/target/release/memorize-integration-tests
+        env:
+          MEMORIZE_SERVER_URL: http://127.0.0.1:50051
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill $(cat server.pid) 2>/dev/null || true
+          fi
+
+  # =============================================================================
+  # Integration Tests (Rust with Auth)
+  # =============================================================================
+  integration-tests-rust-auth:
+    name: Integration Tests (Rust + Auth)
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download server binary
+        uses: actions/download-artifact@v4
+        with:
+          name: memorize-server
+          path: ./server
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Build Rust integration tests
+        run: cargo build --release --manifest-path bindings/rust/memorize-integration-tests/Cargo.toml
+
+      - name: Make server executable
+        run: chmod +x ./server/memorize-server
+
+      - name: Start Memorize server (with auth)
+        run: |
+          ./server/memorize-server &
+          echo $! > server.pid
+          # Wait for server to be ready
+          for i in {1..30}; do
+            if nc -z localhost 50051 2>/dev/null; then
+              echo "Server is ready"
+              break
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 1
+          done
+        env:
+          MEMORIZE_HOST: 127.0.0.1
+          MEMORIZE_PORT: 50051
+          MEMORIZE_API_KEY: test-secret-key
+
+      - name: Run Rust integration tests (with auth)
+        run: ./bindings/rust/memorize-integration-tests/target/release/memorize-integration-tests
+        env:
+          MEMORIZE_SERVER_URL: http://127.0.0.1:50051
+          MEMORIZE_API_KEY: test-secret-key
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill $(cat server.pid) 2>/dev/null || true
+          fi
+
+  # =============================================================================
+  # Integration Tests (C#)
+  # =============================================================================
+  integration-tests-csharp:
+    name: Integration Tests (C#)
+    needs: [build, build-csharp]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download server binary
+        uses: actions/download-artifact@v4
+        with:
+          name: memorize-server
+          path: ./server
+
+      - name: Download C# integration tests
+        uses: actions/download-artifact@v4
+        with:
+          name: csharp-integration-tests
+          path: ./csharp-tests
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Make server executable
+        run: chmod +x ./server/memorize-server
+
+      - name: Start Memorize server
+        run: |
+          ./server/memorize-server &
+          echo $! > server.pid
+          # Wait for server to be ready
+          for i in {1..30}; do
+            if nc -z localhost 50051 2>/dev/null; then
+              echo "Server is ready"
+              break
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 1
+          done
+        env:
+          MEMORIZE_HOST: 127.0.0.1
+          MEMORIZE_PORT: 50051
+
+      - name: Run C# integration tests
+        run: dotnet ./csharp-tests/memorize-integration-tests-csharp.dll
+        env:
+          MEMORIZE_SERVER_URL: http://127.0.0.1:50051
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill $(cat server.pid) 2>/dev/null || true
+          fi
+
+  # =============================================================================
+  # Integration Tests (C# with Auth)
+  # =============================================================================
+  integration-tests-csharp-auth:
+    name: Integration Tests (C# + Auth)
+    needs: [build, build-csharp]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download server binary
+        uses: actions/download-artifact@v4
+        with:
+          name: memorize-server
+          path: ./server
+
+      - name: Download C# integration tests
+        uses: actions/download-artifact@v4
+        with:
+          name: csharp-integration-tests
+          path: ./csharp-tests
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Make server executable
+        run: chmod +x ./server/memorize-server
+
+      - name: Start Memorize server (with auth)
+        run: |
+          ./server/memorize-server &
+          echo $! > server.pid
+          # Wait for server to be ready
+          for i in {1..30}; do
+            if nc -z localhost 50051 2>/dev/null; then
+              echo "Server is ready"
+              break
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 1
+          done
+        env:
+          MEMORIZE_HOST: 127.0.0.1
+          MEMORIZE_PORT: 50051
+          MEMORIZE_API_KEY: test-secret-key
+
+      - name: Run C# integration tests (with auth)
+        run: dotnet ./csharp-tests/memorize-integration-tests-csharp.dll
+        env:
+          MEMORIZE_SERVER_URL: http://127.0.0.1:50051
+          MEMORIZE_API_KEY: test-secret-key
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill $(cat server.pid) 2>/dev/null || true
+          fi
