@@ -4,7 +4,7 @@ version = "1.0.0"
 edition = "2024"
 description = "A high-level Rust client for the Memorize in-memory cache"
 license = "MIT"
-repository = "https://github.com/yourorg/memorize"
+repository = "https://github.com/Vfleitao/memorise"
 keywords = ["cache", "grpc", "memorize", "client"]
 categories = ["caching", "network-programming"]
 

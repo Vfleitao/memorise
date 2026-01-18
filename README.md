@@ -86,8 +86,8 @@ docker run -d -p 50051:50051 \
 
 ```powershell
 # Clone the repository
-git clone https://github.com/your-username/memorize.git
-cd memorize
+git clone https://github.com/Vfleitao/memorise.git
+cd memorise
 
 # Build everything (server, tests, bindings, NuGet package)
 ./build.ps1
@@ -143,7 +143,11 @@ $env:MEMORIZE_API_KEY = "my-secret"
 
 ### C# (.NET)
 
-Install the NuGet package or reference the built `.nupkg`:
+Install from [NuGet](https://www.nuget.org/packages/Memorize.Client):
+
+```bash
+dotnet add package Memorize.Client
+```
 
 ```csharp
 using Memorize.Client;

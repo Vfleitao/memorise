@@ -4,13 +4,13 @@ A simple, high-performance .NET client for the Memorize cache server.
 
 ## Installation
 
-```bash
-# From NuGet (when published)
-dotnet add package Memorize.Client
+[![NuGet](https://img.shields.io/nuget/v/Memorize.Client.svg)](https://www.nuget.org/packages/Memorize.Client)
 
-# Or add project reference
-dotnet add reference path/to/Memorize.Client.csproj
+```bash
+dotnet add package Memorize.Client
 ```
+
+Supports **.NET 8.0**, **.NET 9.0**, and **.NET 10.0**.
 
 ## Quick Start
 
