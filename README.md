@@ -16,35 +16,38 @@ A Redis-like in-memory cache server with gRPC API, written in Rust.
 
 ## Performance
 
-Benchmarks comparing Memorize vs Redis (StackExchange.Redis) on Windows 11, .NET 8.0:
+Benchmarks comparing Memorize vs Redis (StackExchange.Redis) on Windows 11, .NET 8.0.
 
-### Single Operations (100-byte payload)
+### Docker-to-Docker (Fair Comparison)
+
+Both servers running in Docker containers, benchmarks connecting from host:
+
+| Operation | Memorize | Redis | Comparison |
+|-----------|----------|-------|------------|
+| **SET** | 233-320 μs | 240-290 μs | Similar |
+| **GET** | 241-251 μs | 205-256 μs | Similar |
+| **SET+GET roundtrip** | 660-724 μs | 603-667 μs | Similar |
+
+### Concurrent Operations (100 parallel, Docker)
 
 | Operation | Memorize | Redis | Notes |
 |-----------|----------|-------|-------|
-| **SET** | 234 μs | 189 μs | gRPC has ~20% higher protocol overhead |
-| **GET** | 231 μs | 187 μs | Similar pattern for reads |
-| **CONTAINS/EXISTS** | 231-237 μs | 182-201 μs | Key existence checks |
-| **DELETE** | 479 μs | 402 μs | Includes roundtrip confirmation |
-| **SET+GET roundtrip** | 744 μs | 601 μs | Full write-read cycle |
+| **SET (100 concurrent)** | 2.5 ms | 372-500 μs | Redis pipelining more efficient |
+| **GET (100 concurrent)** | 5.1 ms | 812-925 μs | Redis optimized for bulk ops |
+| **Mixed SET/GET** | 10.8 ms | 422-512 μs | |
 
-### Key Search Operations
+### Native Server Performance
 
-| Operation | Memorize | Redis | Notes |
-|-----------|----------|-------|-------|
-| **SEARCH_KEYS (50 results)** | 313 μs | 225 μs | Pattern matching with results |
-| **SEARCH_KEYS (paginated 10)** | 252 μs | N/A | Memorize supports native pagination |
+When running Memorize server natively (not in Docker), latency improves significantly:
 
-### Memory Allocation
-
-| Operation | Memorize | Redis |
-|-----------|----------|-------|
-| **SET (single)** | 6.6 KB | 0.4 KB |
-| **GET (single)** | 6.8 KB | 0.6 KB |
-| **SET+GET roundtrip** | 19.8 KB | 1.2 KB |
+| Operation | Memorize (Native) | Notes |
+|-----------|------------------|-------|
+| **SET** | ~79 μs | **3x faster than Docker** |
+| **GET** | ~68 μs | **3.5x faster than Docker** |
+| **SET+GET roundtrip** | ~200 μs | |
 
 > [!NOTE]
-> **Trade-offs**: Memorize uses gRPC which provides language-agnostic, strongly-typed APIs with automatic code generation, but has higher per-request overhead than Redis's optimized binary protocol. Memorize excels when you need a simple, self-contained cache without external dependencies, built-in pagination for key searches, or prefer gRPC for service mesh integration.
+> **Key Takeaway**: Docker networking adds ~150-200μs latency per operation. For lowest latency, run Memorize natively alongside your application. Redis has a highly optimized binary protocol that excels at concurrent/pipelined operations, while Memorize provides simpler deployment and comparable single-operation performance.
 
 ## Architecture
 
