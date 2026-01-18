@@ -14,6 +14,38 @@ A Redis-like in-memory cache server with gRPC API, written in Rust.
 > [!IMPORTANT]
 > Memorize is a **simple, single-node cache** designed for straightforward read/write operations. It does not support clustering, replication, or persistence. If you need those features, consider Redis or similar solutions.
 
+## Performance
+
+Benchmarks comparing Memorize vs Redis (StackExchange.Redis) on Windows 11, .NET 8.0:
+
+### Single Operations (100-byte payload)
+
+| Operation | Memorize | Redis | Notes |
+|-----------|----------|-------|-------|
+| **SET** | 234 μs | 189 μs | gRPC has ~20% higher protocol overhead |
+| **GET** | 231 μs | 187 μs | Similar pattern for reads |
+| **CONTAINS/EXISTS** | 231-237 μs | 182-201 μs | Key existence checks |
+| **DELETE** | 479 μs | 402 μs | Includes roundtrip confirmation |
+| **SET+GET roundtrip** | 744 μs | 601 μs | Full write-read cycle |
+
+### Key Search Operations
+
+| Operation | Memorize | Redis | Notes |
+|-----------|----------|-------|-------|
+| **SEARCH_KEYS (50 results)** | 313 μs | 225 μs | Pattern matching with results |
+| **SEARCH_KEYS (paginated 10)** | 252 μs | N/A | Memorize supports native pagination |
+
+### Memory Allocation
+
+| Operation | Memorize | Redis |
+|-----------|----------|-------|
+| **SET (single)** | 6.6 KB | 0.4 KB |
+| **GET (single)** | 6.8 KB | 0.6 KB |
+| **SET+GET roundtrip** | 19.8 KB | 1.2 KB |
+
+> [!NOTE]
+> **Trade-offs**: Memorize uses gRPC which provides language-agnostic, strongly-typed APIs with automatic code generation, but has higher per-request overhead than Redis's optimized binary protocol. Memorize excels when you need a simple, self-contained cache without external dependencies, built-in pagination for key searches, or prefer gRPC for service mesh integration.
+
 ## Architecture
 
 ```
@@ -46,21 +78,21 @@ memorize/
 
 ### Using Docker (Recommended)
 
-```bash
-# Build the image
-docker build -t memorize-server .
+The official image is available on GitHub Container Registry:
 
+```bash
+docker pull ghcr.io/vfleitao/memorise:latest
+```
+
+```bash
 # Run with default settings (no authentication, 100MB limit)
-docker run -d -p 50051:50051 --name memorize memorize-server
+docker run -d -p 50051:50051 --name memorize ghcr.io/vfleitao/memorise:latest
 
 # Run with API key authentication
-docker run -d -p 50051:50051 -e MEMORIZE_API_KEY=your-secret-key memorize-server
+docker run -d -p 50051:50051 -e MEMORIZE_API_KEY=your-secret-key ghcr.io/vfleitao/memorise:latest
 
 # Run with custom storage limit (500MB)
-docker run -d -p 50051:50051 -e MEMORIZE_MAX_STORAGE_MB=500 memorize-server
-
-# Run with unlimited storage (use with caution!)
-docker run -d -p 50051:50051 -e MEMORIZE_MAX_STORAGE_MB=0 memorize-server
+docker run -d -p 50051:50051 -e MEMORIZE_MAX_STORAGE_MB=500 ghcr.io/vfleitao/memorise:latest
 
 # Run with all custom settings
 docker run -d -p 50051:50051 \
@@ -69,7 +101,72 @@ docker run -d -p 50051:50051 \
   -e MEMORIZE_CLEANUP_INTERVAL=30 \
   -e MEMORIZE_MAX_STORAGE_MB=500 \
   -e MEMORIZE_API_KEY=my-secret \
-  memorize-server
+  ghcr.io/vfleitao/memorise:latest
+```
+
+### Deploying to Azure
+
+> [!WARNING]
+> **Security Notice**: Memorize does not provide TLS/SSL encryption. It is designed to run **inside a private network (VNet)** where only your application can access it. For production deployments:
+> - Deploy within a Virtual Network (VNet) with no public IP
+> - Use Azure Private Endpoints or internal load balancers
+> - If public access is required, place behind an API Gateway or reverse proxy that handles TLS termination
+> - Always enable API key authentication (`MEMORIZE_API_KEY`)
+
+#### Azure Container Instances (with VNet)
+
+```bash
+# Create a resource group
+az group create --name memorize-rg --location eastus
+
+# Create a VNet and subnet for the container
+az network vnet create \
+  --resource-group memorize-rg \
+  --name memorize-vnet \
+  --address-prefix 10.0.0.0/16 \
+  --subnet-name memorize-subnet \
+  --subnet-prefix 10.0.0.0/24
+
+# Deploy the container (private IP only - no public access)
+az container create \
+  --resource-group memorize-rg \
+  --name memorize-cache \
+  --image ghcr.io/vfleitao/memorise:latest \
+  --ports 50051 \
+  --cpu 1 \
+  --memory 1 \
+  --environment-variables \
+    MEMORIZE_MAX_STORAGE_MB=500 \
+    MEMORIZE_API_KEY=your-secret-key \
+  --vnet memorize-vnet \
+  --subnet memorize-subnet \
+  --ip-address private
+
+# Get the private IP address (use this from your app in the same VNet)
+az container show \
+  --resource-group memorize-rg \
+  --name memorize-cache \
+  --query ipAddress.ip \
+  --output tsv
+```
+
+#### Docker Compose (Local Development)
+
+```yaml
+# docker-compose.yml
+services:
+  memorize:
+    image: ghcr.io/vfleitao/memorise:latest
+    ports:
+      - "50051:50051"
+    environment:
+      - MEMORIZE_MAX_STORAGE_MB=500
+      - MEMORIZE_API_KEY=dev-secret-key
+    restart: unless-stopped
+```
+
+```bash
+docker-compose up -d
 ```
 
 #### Docker Environment Variables
