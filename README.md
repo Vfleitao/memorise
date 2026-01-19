@@ -141,6 +141,7 @@ az container create \
   --environment-variables \
     MEMORIZE_MAX_STORAGE_MB=500 \
     MEMORIZE_API_KEY=your-secret-key \
+  --os-type Linux
   --vnet memorize-vnet \
   --subnet memorize-subnet \
   --ip-address private
