@@ -232,9 +232,10 @@ impl Store {
     /// which would significantly impact throughput.
     pub fn set(&self, key: impl Into<String>, value: impl Into<String>, ttl_seconds: u64) -> Result<(), SetError> {
         let key = key.into();
-        let value = value.into();
-        let new_entry_size = Self::entry_size(&key, &value);
-        
+        let value: Arc<str> = Arc::from(value.into());
+        let key_len = key.len();
+        let new_entry_size = key_len + value.len();
+
         // Check storage limit (0 = unlimited)
         // Note: This is a soft limit check - see method documentation for details
         if self.inner.max_storage_bytes > 0 {
@@ -243,13 +244,13 @@ impl Store {
                 .get(&key)
                 .map(|entry| Self::entry_size(&key, entry.value().value()))
                 .unwrap_or(0);
-            
+
             let size_delta = new_entry_size as isize - old_entry_size as isize;
-            
+
             if size_delta > 0 {
                 let current = self.inner.current_size.load(Ordering::Relaxed);
                 let new_size = current.saturating_add(size_delta as usize);
-                
+
                 if new_size > self.inner.max_storage_bytes {
                     return Err(SetError::StorageFull {
                         current_bytes: current,
@@ -258,12 +259,12 @@ impl Store {
                 }
             }
         }
-        
+
         // Cap TTL to ~100 years to prevent overflow when adding to Instant.
         // This value is used both as a maximum for explicit TTLs and as the
         // "never expire" duration when TTL is 0.
         const MAX_TTL_SECONDS: u64 = 100 * 365 * 24 * 60 * 60; // ~100 years
-        
+
         // TTL of 0 means "never expire" - we implement this as expiring in ~100 years
         // rather than using Option<Instant> to keep the data structure simple and
         // avoid branching in hot paths. For all practical purposes, this is infinite.
@@ -272,27 +273,28 @@ impl Store {
         } else {
             ttl_seconds.min(MAX_TTL_SECONDS)
         };
-        
+
         let expires_at = Instant::now() + Duration::from_secs(safe_ttl);
         let entry = Entry::new(value, expires_at);
-        
+
         // Insert and track size change
         // Note: Size tracking happens after insert, creating a brief window of inaccuracy.
         // This is acceptable as the limit is a soft limit (see method docs).
-        let old_entry = self.inner.data.insert(key.clone(), entry);
-        
+        // We pass key by value to avoid an extra clone.
+        let old_entry = self.inner.data.insert(key, entry);
+
         // Calculate actual size change based on what was actually replaced
         let actual_old_size = old_entry
-            .map(|e| Self::entry_size(&key, e.value()))
+            .map(|e| key_len + e.value().len())
             .unwrap_or(0);
         let size_delta = new_entry_size as isize - actual_old_size as isize;
-        
+
         if size_delta > 0 {
             self.inner.current_size.fetch_add(size_delta as usize, Ordering::Relaxed);
         } else if size_delta < 0 {
             self.inner.current_size.fetch_sub((-size_delta) as usize, Ordering::Relaxed);
         }
-        
+
         Ok(())
     }
 
@@ -300,9 +302,9 @@ impl Store {
     #[cfg(test)]
     fn set_expired(&self, key: impl Into<String>, value: impl Into<String>) {
         let key = key.into();
-        let value = value.into();
-        let entry_size = Self::entry_size(&key, &value);
-        
+        let value: Arc<str> = Arc::from(value.into());
+        let entry_size = key.len() + value.len();
+
         // Set expiration to a time in the past
         let expires_at = Instant::now() - Duration::from_secs(1);
         let entry = Entry::new(value, expires_at);
@@ -311,10 +313,14 @@ impl Store {
     }
 
     /// Retrieves a value by key
-    /// 
+    ///
     /// Returns `None` if the key doesn't exist or has expired.
     /// Expired entries are automatically removed.
-    pub fn get(&self, key: &str) -> Option<String> {
+    ///
+    /// Returns an `Arc<str>` for zero-cost cloning — callers that only need
+    /// a `&str` can dereference it, while callers that need ownership get a
+    /// cheap reference-count bump instead of a full heap allocation.
+    pub fn get(&self, key: &str) -> Option<Arc<str>> {
         // Try to get the entry
         let entry = self.inner.data.get(key)?;
 
@@ -331,7 +337,7 @@ impl Store {
             return None;
         }
 
-        Some(entry.value().value().to_string())
+        Some(entry.value().value_shared())
     }
 
     /// Deletes a key from the store
@@ -578,8 +584,8 @@ mod tests {
     fn test_set_and_get() {
         let store = create_test_store();
         store.set("key1", "value1", 60).unwrap();
-        
-        assert_eq!(store.get("key1"), Some("value1".to_string()));
+
+        assert_eq!(store.get("key1").as_deref(), Some("value1"));
     }
 
     #[test]
@@ -593,8 +599,8 @@ mod tests {
         let store = create_test_store();
         store.set("key1", "value1", 60).unwrap();
         store.set("key1", "value2", 60).unwrap();
-        
-        assert_eq!(store.get("key1"), Some("value2".to_string()));
+
+        assert_eq!(store.get("key1").as_deref(), Some("value2"));
     }
 
     #[test]
@@ -690,7 +696,7 @@ mod tests {
         let removed = store.cleanup();
         assert_eq!(removed, 2);
         assert_eq!(store.len(), 1);
-        assert_eq!(store.get("valid"), Some("value3".to_string()));
+        assert_eq!(store.get("valid").as_deref(), Some("value3"));
     }
 
     #[test]
@@ -739,9 +745,9 @@ mod tests {
         let store = create_test_store();
         // This should not panic - TTL is capped internally
         store.set("key1", "value1", u64::MAX).unwrap();
-        
+
         // Should still be retrievable (won't expire for ~100 years)
-        assert_eq!(store.get("key1"), Some("value1".to_string()));
+        assert_eq!(store.get("key1").as_deref(), Some("value1"));
     }
 
     #[test]
@@ -749,12 +755,12 @@ mod tests {
         let store = create_test_store();
         // TTL of 0 means the entry never expires
         store.set("key1", "value1", 0).unwrap();
-        
+
         // Wait a bit to ensure it doesn't expire
         thread::sleep(Duration::from_millis(50));
-        
+
         // Should still be retrievable
-        assert_eq!(store.get("key1"), Some("value1".to_string()));
+        assert_eq!(store.get("key1").as_deref(), Some("value1"));
         assert!(store.contains_key("key1"));
     }
 
@@ -948,7 +954,7 @@ mod tests {
         
         // Background cleanup should have removed expired entries
         assert_eq!(store.len(), 1);
-        assert_eq!(store.get("keep"), Some("value3".to_string()));
+        assert_eq!(store.get("keep").as_deref(), Some("value3"));
     }
 
     #[tokio::test]
@@ -957,12 +963,12 @@ mod tests {
         let store2 = store1.clone();
         
         store1.set("key1", "value1", 60).unwrap();
-        
+
         // Both stores should see the same data
-        assert_eq!(store2.get("key1"), Some("value1".to_string()));
-        
+        assert_eq!(store2.get("key1").as_deref(), Some("value1"));
+
         store2.set("key2", "value2", 60).unwrap();
-        assert_eq!(store1.get("key2"), Some("value2".to_string()));
+        assert_eq!(store1.get("key2").as_deref(), Some("value2"));
     }
 
     #[tokio::test]
@@ -981,7 +987,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         
         // The entry should still be there (TTL=0 means never expire)
-        assert_eq!(store.get("key1"), Some("value1".to_string()));
+        assert_eq!(store.get("key1").as_deref(), Some("value1"));
     }
 
     #[tokio::test]
@@ -1006,7 +1012,7 @@ mod tests {
         
         // store2 should still have its entry (independent store)
         assert_eq!(store2.len(), 1);
-        assert_eq!(store2.get("keep"), Some("value".to_string()));
+        assert_eq!(store2.get("keep").as_deref(), Some("value"));
     }
 
     #[test]
