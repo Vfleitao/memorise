@@ -60,6 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service_with_auth = MemorizeServer::with_interceptor(service, auth_interceptor(api_key));
 
     Server::builder()
+        .tcp_nodelay(true)
+        .http2_keepalive_interval(Some(Duration::from_secs(60)))
         .add_service(service_with_auth)
         .serve(addr)
         .await?;

@@ -24,19 +24,28 @@ const MAX_PREFIX_LENGTH: usize = 256;
 /// Maximum allowed skip value for search pagination (prevents abuse)
 const MAX_SKIP: u32 = 10000;
 
-/// Truncates a key for safe logging (prevents leaking sensitive key data)
-fn truncate_key_for_log(key: &str) -> String {
-    const MAX_LOG_LEN: usize = 16;
-    if key.len() <= MAX_LOG_LEN {
-        key.to_string()
-    } else {
-        // Find the largest byte index <= MAX_LOG_LEN on a char boundary.
-        // This avoids panicking when the index falls inside a multi-byte UTF-8 character.
-        let mut end = MAX_LOG_LEN;
-        while end > 0 && !key.is_char_boundary(end) {
-            end -= 1;
+/// Zero-allocation key truncation for log output.
+///
+/// Implements `Display` so `tracing` macros only format the value when the
+/// log level is enabled. This avoids heap-allocating a `String` on every
+/// request when debug logging is disabled.
+struct TruncatedKey<'a>(&'a str);
+
+impl std::fmt::Display for TruncatedKey<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const MAX_LOG_LEN: usize = 16;
+        if self.0.len() <= MAX_LOG_LEN {
+            f.write_str(self.0)
+        } else {
+            // Find the largest byte index <= MAX_LOG_LEN on a char boundary.
+            // This avoids panicking when the index falls inside a multi-byte UTF-8 character.
+            let mut end = MAX_LOG_LEN;
+            while end > 0 && !self.0.is_char_boundary(end) {
+                end -= 1;
+            }
+            f.write_str(&self.0[..end])?;
+            f.write_str("...")
         }
-        format!("{}...", &key[..end])
     }
 }
 
@@ -88,9 +97,9 @@ impl Memorize for MemorizeService {
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let key = &request.get_ref().key;
         validate_key(key)?;
-        tracing::debug!("GET {}", truncate_key_for_log(key));
+        tracing::debug!("GET {}", TruncatedKey(key));
 
-        let value = self.store.get(key);
+        let value = self.store.get(key).map(|v| v.to_string());
         Ok(Response::new(GetResponse { value }))
     }
 
@@ -100,7 +109,7 @@ impl Memorize for MemorizeService {
         validate_value(&req.value)?;
         
         let ttl_display = if req.ttl_seconds == 0 { "never".to_string() } else { format!("{}s", req.ttl_seconds) };
-        tracing::debug!("SET {} (ttl: {})", truncate_key_for_log(&req.key), ttl_display);
+        tracing::debug!("SET {} (ttl: {})", TruncatedKey(&req.key), ttl_display);
 
         match self.store.set(&req.key, &req.value, req.ttl_seconds) {
             Ok(()) => Ok(Response::new(SetResponse { success: true })),
@@ -121,7 +130,7 @@ impl Memorize for MemorizeService {
     ) -> Result<Response<DeleteResponse>, Status> {
         let key = &request.get_ref().key;
         validate_key(key)?;
-        tracing::debug!("DELETE {}", truncate_key_for_log(key));
+        tracing::debug!("DELETE {}", TruncatedKey(key));
 
         let deleted = self.store.delete(key);
 
@@ -186,7 +195,7 @@ impl Memorize for MemorizeService {
         
         tracing::debug!(
             "SEARCH_KEYS prefix={} limit={} skip={:?}",
-            truncate_key_for_log(&req.prefix),
+            TruncatedKey(&req.prefix),
             limit,
             skip
         );
@@ -205,7 +214,7 @@ impl Memorize for MemorizeService {
     ) -> Result<Response<ContainsResponse>, Status> {
         let key = &request.get_ref().key;
         validate_key(key)?;
-        tracing::debug!("CONTAINS {}", truncate_key_for_log(key));
+        tracing::debug!("CONTAINS {}", TruncatedKey(key));
 
         let exists = self.store.contains_key(key);
 
@@ -273,40 +282,40 @@ mod tests {
     }
 
     #[test]
-    fn test_truncate_key_for_log_short() {
+    fn test_truncated_key_short() {
         let short_key = "short";
-        assert_eq!(truncate_key_for_log(short_key), "short");
+        assert_eq!(TruncatedKey(short_key).to_string(), "short");
     }
 
     #[test]
-    fn test_truncate_key_for_log_long() {
+    fn test_truncated_key_long() {
         let long_key = "this_is_a_very_long_key_that_should_be_truncated";
-        let truncated = truncate_key_for_log(long_key);
+        let truncated = TruncatedKey(long_key).to_string();
         assert_eq!(truncated, "this_is_a_very_l...");
         assert!(truncated.len() <= 19); // 16 chars + "..."
     }
 
     #[test]
-    fn test_truncate_key_for_log_multibyte_utf8() {
+    fn test_truncated_key_multibyte_utf8() {
         // 15 ASCII bytes + a 4-byte emoji = 19 bytes total.
         // Byte index 16 falls inside the emoji, which would panic
         // with a naive &key[..16] slice.
         let key_with_emoji = "aaaaaaaaaaaaaaa\u{1F525}"; // 15 'a's + 🔥
         assert_eq!(key_with_emoji.len(), 19);
-        let truncated = truncate_key_for_log(key_with_emoji);
+        let truncated = TruncatedKey(key_with_emoji).to_string();
         // Should truncate before the emoji since it can't split mid-character
         assert_eq!(truncated, "aaaaaaaaaaaaaaa...");
 
         // 16 ASCII bytes + emoji = byte 16 is the start of the emoji (valid boundary)
         let key_exact_boundary = "aaaaaaaaaaaaaaaa\u{1F525}"; // 16 'a's + 🔥
         assert_eq!(key_exact_boundary.len(), 20);
-        let truncated = truncate_key_for_log(key_exact_boundary);
+        let truncated = TruncatedKey(key_exact_boundary).to_string();
         assert_eq!(truncated, "aaaaaaaaaaaaaaaa...");
 
         // Multi-byte characters throughout (3 bytes each for CJK)
         let cjk_key = "\u{4e16}\u{754c}\u{4f60}\u{597d}\u{6d4b}\u{8bd5}"; // 世界你好测试 = 18 bytes
         assert_eq!(cjk_key.len(), 18);
-        let truncated = truncate_key_for_log(cjk_key);
+        let truncated = TruncatedKey(cjk_key).to_string();
         // floor_char_boundary(16) should land on byte 15 (start of 6th char)
         // so it truncates to the first 5 CJK chars (15 bytes)
         assert_eq!(truncated, "\u{4e16}\u{754c}\u{4f60}\u{597d}\u{6d4b}...");
