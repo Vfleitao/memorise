@@ -85,6 +85,10 @@ pub const DEFAULT_SEARCH_LIMIT: usize = 50;
 /// Maximum limit for search_keys operations (hard cap)
 pub const MAX_SEARCH_LIMIT: usize = 250;
 
+/// Maximum number of keys to scan during search operations.
+/// Prevents unbounded memory allocation from a single search request.
+pub const MAX_SEARCH_SCAN: usize = 10_000;
+
 #[derive(Clone)]
 pub struct Store {
     inner: Arc<StoreInner>,
@@ -313,17 +317,20 @@ impl Store {
     pub fn get(&self, key: &str) -> Option<String> {
         // Try to get the entry
         let entry = self.inner.data.get(key)?;
-        
+
         if entry.value().is_expired() {
-            let entry_size = Self::entry_size(key, entry.value().value());
             // Drop the read reference before removing
             drop(entry);
-            if self.inner.data.remove(key).is_some() {
+            // Use remove_if to atomically verify expiration and remove.
+            // This prevents a race where another thread replaces the entry
+            // between our check and removal, which would cause size drift.
+            if let Some((k, removed)) = self.inner.data.remove_if(key, |_, v| v.is_expired()) {
+                let entry_size = Self::entry_size(&k, removed.value());
                 self.inner.current_size.fetch_sub(entry_size, Ordering::Relaxed);
             }
             return None;
         }
-        
+
         Some(entry.value().value().to_string())
     }
 
@@ -406,10 +413,13 @@ impl Store {
         match self.inner.data.get(key) {
             Some(entry) => {
                 if entry.value().is_expired() {
-                    let entry_size = Self::entry_size(key, entry.value().value());
                     // Drop the read reference before removing
                     drop(entry);
-                    if self.inner.data.remove(key).is_some() {
+                    // Use remove_if to atomically verify expiration and remove.
+                    // This prevents a race where another thread replaces the entry
+                    // between our check and removal, which would cause size drift.
+                    if let Some((k, removed)) = self.inner.data.remove_if(key, |_, v| v.is_expired()) {
+                        let entry_size = Self::entry_size(&k, removed.value());
                         self.inner.current_size.fetch_sub(entry_size, Ordering::Relaxed);
                     }
                     false
@@ -491,13 +501,15 @@ impl Store {
         let limit = limit.unwrap_or(DEFAULT_SEARCH_LIMIT).min(MAX_SEARCH_LIMIT);
         let skip = skip.unwrap_or(0);
         
-        // Collect all matching, non-expired keys
+        // Collect matching, non-expired keys with a scan cap to bound memory allocation.
         // Filter by prefix first to avoid cloning keys that don't match,
-        // then check expiration (which may be more expensive)
+        // then check expiration (which may be more expensive).
+        // The cap prevents a single request from causing OOM on large stores.
         let mut matching_keys: Vec<String> = self.inner.data
             .iter()
             .filter(|entry| entry.key().starts_with(prefix))
             .filter(|entry| !entry.value().is_expired())
+            .take(MAX_SEARCH_SCAN)
             .map(|entry| entry.key().clone())
             .collect();
         

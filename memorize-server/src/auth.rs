@@ -3,25 +3,35 @@
 //! Validates requests against the `MEMORIZE_API_KEY` environment variable.
 //! If the environment variable is not set, authentication is disabled.
 
-use subtle::ConstantTimeEq;
+use subtle::{Choice, ConstantTimeEq};
 use tonic::{Request, Status};
 
 /// The metadata key for the API key header
 pub const API_KEY_HEADER: &str = "x-api-key";
 
 /// Performs a constant-time comparison of two strings to prevent timing attacks.
-/// Returns true if the strings are equal.
+/// Both length and content are compared in constant time to avoid leaking
+/// the expected key's length through timing side-channels.
 fn constant_time_compare(a: &str, b: &str) -> bool {
     let a_bytes = a.as_bytes();
     let b_bytes = b.as_bytes();
-    
-    // Length check is not constant-time, but that's acceptable since
-    // the expected key length is not secret (attacker can see their own requests)
-    if a_bytes.len() != b_bytes.len() {
-        return false;
+
+    let max_len = a_bytes.len().max(b_bytes.len());
+    if max_len == 0 {
+        return true;
     }
-    
-    a_bytes.ct_eq(b_bytes).into()
+
+    // Pad both to equal length so the comparison always processes
+    // the same number of bytes regardless of input lengths.
+    let mut a_padded = vec![0u8; max_len];
+    let mut b_padded = vec![0u8; max_len];
+    a_padded[..a_bytes.len()].copy_from_slice(a_bytes);
+    b_padded[..b_bytes.len()].copy_from_slice(b_bytes);
+
+    let content_eq = a_padded.ct_eq(&b_padded);
+    let length_eq = Choice::from((a_bytes.len() == b_bytes.len()) as u8);
+
+    (content_eq & length_eq).into()
 }
 
 /// Interceptor that validates the API key from request metadata
@@ -67,6 +77,23 @@ mod tests {
         assert!(!constant_time_compare("secret123", "secret12"));
         assert!(!constant_time_compare("short", "muchlonger"));
         assert!(constant_time_compare("", ""));
+    }
+
+    #[test]
+    fn test_constant_time_compare_one_empty() {
+        // Verify that comparing a non-empty string against empty returns false
+        // (exercises the padding path where one side is entirely padding)
+        assert!(!constant_time_compare("secret", ""));
+        assert!(!constant_time_compare("", "secret"));
+    }
+
+    #[test]
+    fn test_constant_time_compare_same_prefix_different_length() {
+        // Strings that share a prefix but differ in length.
+        // The old early-return on length would short-circuit here;
+        // the new code must still reject in constant time.
+        assert!(!constant_time_compare("secret123", "secret1234"));
+        assert!(!constant_time_compare("secret1234", "secret123"));
     }
 
     #[test]

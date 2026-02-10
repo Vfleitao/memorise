@@ -30,7 +30,13 @@ fn truncate_key_for_log(key: &str) -> String {
     if key.len() <= MAX_LOG_LEN {
         key.to_string()
     } else {
-        format!("{}...", &key[..MAX_LOG_LEN])
+        // Find the largest byte index <= MAX_LOG_LEN on a char boundary.
+        // This avoids panicking when the index falls inside a multi-byte UTF-8 character.
+        let mut end = MAX_LOG_LEN;
+        while end > 0 && !key.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &key[..end])
     }
 }
 
@@ -104,10 +110,7 @@ impl Memorize for MemorizeService {
                     current_bytes,
                     max_bytes
                 );
-                Err(Status::resource_exhausted(format!(
-                    "Storage capacity exceeded ({} of {} bytes used)",
-                    current_bytes, max_bytes
-                )))
+                Err(Status::resource_exhausted("Storage capacity exceeded"))
             }
         }
     }
@@ -143,7 +146,7 @@ impl Memorize for MemorizeService {
 
     async fn keys(&self, request: Request<KeysRequest>) -> Result<Response<KeysResponse>, Status> {
         let req = request.get_ref();
-        let limit = if req.limit == 0 { DEFAULT_KEYS_LIMIT } else { req.limit };
+        let limit = if req.limit == 0 { DEFAULT_KEYS_LIMIT } else { req.limit.min(DEFAULT_KEYS_LIMIT) };
         tracing::debug!("KEYS (limit: {})", limit);
 
         let keys = self.store.keys_with_limit(Some(limit as usize));
@@ -281,6 +284,60 @@ mod tests {
         let truncated = truncate_key_for_log(long_key);
         assert_eq!(truncated, "this_is_a_very_l...");
         assert!(truncated.len() <= 19); // 16 chars + "..."
+    }
+
+    #[test]
+    fn test_truncate_key_for_log_multibyte_utf8() {
+        // 15 ASCII bytes + a 4-byte emoji = 19 bytes total.
+        // Byte index 16 falls inside the emoji, which would panic
+        // with a naive &key[..16] slice.
+        let key_with_emoji = "aaaaaaaaaaaaaaa\u{1F525}"; // 15 'a's + 🔥
+        assert_eq!(key_with_emoji.len(), 19);
+        let truncated = truncate_key_for_log(key_with_emoji);
+        // Should truncate before the emoji since it can't split mid-character
+        assert_eq!(truncated, "aaaaaaaaaaaaaaa...");
+
+        // 16 ASCII bytes + emoji = byte 16 is the start of the emoji (valid boundary)
+        let key_exact_boundary = "aaaaaaaaaaaaaaaa\u{1F525}"; // 16 'a's + 🔥
+        assert_eq!(key_exact_boundary.len(), 20);
+        let truncated = truncate_key_for_log(key_exact_boundary);
+        assert_eq!(truncated, "aaaaaaaaaaaaaaaa...");
+
+        // Multi-byte characters throughout (3 bytes each for CJK)
+        let cjk_key = "\u{4e16}\u{754c}\u{4f60}\u{597d}\u{6d4b}\u{8bd5}"; // 世界你好测试 = 18 bytes
+        assert_eq!(cjk_key.len(), 18);
+        let truncated = truncate_key_for_log(cjk_key);
+        // floor_char_boundary(16) should land on byte 15 (start of 6th char)
+        // so it truncates to the first 5 CJK chars (15 bytes)
+        assert_eq!(truncated, "\u{4e16}\u{754c}\u{4f60}\u{597d}\u{6d4b}...");
+    }
+
+    #[tokio::test]
+    async fn test_keys_limit_capped_to_max() {
+        let store = create_test_store();
+
+        // Add more keys than DEFAULT_KEYS_LIMIT would allow
+        // We can't practically add 10,001 keys in a unit test,
+        // so we verify the capping logic: a limit beyond DEFAULT_KEYS_LIMIT
+        // should be clamped down.
+        for i in 0..50 {
+            store.set(format!("key:{:02}", i), "value", 60).unwrap();
+        }
+
+        let service = MemorizeService::new(store, false);
+
+        // Request with limit=0 (default) should work
+        let request = Request::new(KeysRequest { pattern: None, limit: 0 });
+        let result = service.keys(request).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().into_inner().keys.len(), 50);
+
+        // Request with limit > DEFAULT_KEYS_LIMIT should be capped
+        // (returns all 50 keys since 50 < DEFAULT_KEYS_LIMIT, but the limit itself is capped)
+        let request = Request::new(KeysRequest { pattern: None, limit: 20_000 });
+        let result = service.keys(request).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().into_inner().keys.len(), 50);
     }
 
     #[tokio::test]

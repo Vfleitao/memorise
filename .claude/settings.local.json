@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
+      "Bash(docker --version:*)",
+      "Bash(docker build:*)",
+      "Bash(docker run:*)",
+      "Bash(MEMORIZE_SERVER_URL=http://localhost:50051 cargo run:*)",
+      "Bash(docker stop:*)",
+      "Bash(docker rm:*)"
+    ]
+  }
+}
