@@ -105,7 +105,7 @@ if let Err(e) = client.set("key", "value", None).await {
 
 ### Storage Full Error
 
-When the server has reached its configured maximum storage limit (`MEMORIZE_MAX_STORAGE_MB`), `set()` will return `Error::StorageFull`:
+By default the server evicts entries to make room when it reaches its storage limit (`MEMORIZE_MAX_STORAGE_MB`), so `set()` only returns `Error::StorageFull` when the server runs with `MEMORIZE_EVICTION_POLICY=noeviction`, or when a single value is larger than the whole limit:
 
 ```rust
 match client.set("key", large_value, None).await {
@@ -133,11 +133,19 @@ Connects to the Memorize server.
 
 ### `client.get(key) -> Result<Option<String>, Error>`
 
-Gets a value by key. Returns `None` if the key doesn't exist.
+Gets a value by key as a string. Returns `None` if the key doesn't exist. Returns `Error::InvalidUtf8` if the value isn't valid UTF-8 (use `get_bytes` for binary values).
+
+### `client.get_bytes(key) -> Result<Option<Vec<u8>>, Error>`
+
+Gets a value by key as raw bytes. Returns `None` if the key doesn't exist.
 
 ### `client.set(key, value, ttl_secs) -> Result<(), Error>`
 
-Sets a key-value pair with an optional TTL in seconds. Returns `Error::StorageFull` if the server has reached its storage limit.
+Sets a string value (stored as UTF-8) with an optional TTL in seconds. Returns `Error::StorageFull` if the value can't be stored (see above).
+
+### `client.set_bytes(key, value, ttl_secs) -> Result<(), Error>`
+
+Sets a raw byte value, for binary payloads such as protobuf, MessagePack or compressed data. Strings and bytes share the same storage, so a value set with `set` can be read with `get_bytes`, and UTF-8 bytes set with `set_bytes` can be read with `get`.
 
 ### `client.delete(key) -> Result<bool, Error>`
 

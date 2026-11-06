@@ -21,6 +21,11 @@ pub enum Error {
     #[error("gRPC error: {0}")]
     Grpc(#[from] tonic::Status),
 
+    /// A value read as a string isn't valid UTF-8 (it was probably stored as raw bytes).
+    /// Use `get_bytes` to read it.
+    #[error("Value is not valid UTF-8: {0}")]
+    InvalidUtf8(#[from] std::string::FromUtf8Error),
+
     /// JSON serialization error (requires `json` feature)
     #[cfg(feature = "json")]
     #[error("Serialization error: {0}")]

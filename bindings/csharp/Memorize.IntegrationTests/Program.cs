@@ -34,6 +34,7 @@ public static class Program
             using var cache = new MemorizeClient(options);
 
             await TestBasicOperations(cache);
+            await TestBinaryValues(cache);
             await TestDeleteAll(cache);
             await TestSearchKeys(cache);
             await TestJsonSerialization(cache);
@@ -92,6 +93,56 @@ public static class Program
         Debug.Assert(afterDelete == null, "GET after DELETE should return null");
 
         Console.WriteLine("   ✓ Basic operations work correctly");
+    }
+
+    /// <summary>
+    /// Test raw byte values and how they interoperate with string values
+    /// </summary>
+    private static async Task TestBinaryValues(MemorizeClient cache)
+    {
+        Console.WriteLine("Test: Binary Values");
+
+        // Every byte value, including sequences that aren't valid UTF-8
+        var binaryKey = $"binary-test-{Guid.NewGuid()}";
+        var binaryValue = Enumerable.Range(0, 256).Select(i => (byte)i).ToArray();
+        await cache.SetBytesAsync(binaryKey, binaryValue, ttlSeconds: 60);
+        var loaded = await cache.GetBytesAsync(binaryKey);
+        Debug.Assert(loaded != null && loaded.SequenceEqual(binaryValue), "Bytes should round trip unchanged");
+
+        // Reading non-UTF-8 bytes as a string is an error, not a lossy conversion
+        var threw = false;
+        try
+        {
+            await cache.GetAsync(binaryKey);
+        }
+        catch (System.Text.DecoderFallbackException)
+        {
+            threw = true;
+        }
+        Debug.Assert(threw, "GetAsync on non-UTF-8 bytes should throw");
+
+        // Strings are stored as UTF-8, so they read back the same either way
+        var textKey = $"text-test-{Guid.NewGuid()}";
+        var text = "héllo wörld 🌍";
+        await cache.SetAsync(textKey, text, ttlSeconds: 60);
+        var textBytes = await cache.GetBytesAsync(textKey);
+        Debug.Assert(textBytes != null && textBytes.SequenceEqual(System.Text.Encoding.UTF8.GetBytes(text)),
+            "String values should read back as their UTF-8 bytes");
+        await cache.SetBytesAsync(textKey, System.Text.Encoding.UTF8.GetBytes(text), ttlSeconds: 60);
+        Debug.Assert(await cache.GetAsync(textKey) == text, "UTF-8 bytes should read back as the string");
+
+        // An empty value is returned as an empty array, a missing key as null
+        var emptyKey = $"empty-test-{Guid.NewGuid()}";
+        await cache.SetBytesAsync(emptyKey, Array.Empty<byte>(), ttlSeconds: 60);
+        var empty = await cache.GetBytesAsync(emptyKey);
+        Debug.Assert(empty != null && empty.Length == 0, "Empty value should be an empty array");
+        Debug.Assert(await cache.GetBytesAsync($"missing-{Guid.NewGuid()}") == null, "Missing key should be null");
+
+        await cache.DeleteAsync(binaryKey);
+        await cache.DeleteAsync(textKey);
+        await cache.DeleteAsync(emptyKey);
+
+        Console.WriteLine("   ✓ Binary values work correctly");
     }
 
     /// <summary>

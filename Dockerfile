@@ -65,6 +65,8 @@ ENV MEMORIZE_PORT=50051
 ENV MEMORIZE_CLEANUP_INTERVAL=60
 # Max storage in MB (default 100MB, set to 0 for unlimited - use with caution!)
 ENV MEMORIZE_MAX_STORAGE_MB=100
+# What to do when storage is full: "lru" (evict least recently used) or "noeviction" (reject writes)
+ENV MEMORIZE_EVICTION_POLICY=lru
 # MEMORIZE_API_KEY is intentionally not set by default (auth disabled)
 
 # Expose the gRPC port

@@ -1,3 +1,5 @@
+using System.Text;
+using Google.Protobuf;
 using Grpc.Core;
 using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
@@ -27,6 +29,9 @@ namespace Memorize.Client;
 /// </example>
 public sealed class MemorizeClient : IDisposable, IAsyncDisposable
 {
+    /// <summary>UTF-8 decoding that throws on invalid bytes instead of substituting U+FFFD.</summary>
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
     private readonly GrpcChannel _channel;
     private readonly Proto.Memorize.MemorizeClient _grpcClient;
     private readonly MemorizeClientOptions _options;
@@ -86,18 +91,44 @@ public sealed class MemorizeClient : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Gets a value from the cache.
+    /// Gets a value from the cache as a string (decoded from UTF-8).
     /// </summary>
     /// <param name="key">The key to look up</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>The value if found, null if not found or expired</returns>
+    /// <exception cref="DecoderFallbackException">
+    /// Thrown when the value isn't valid UTF-8 (it was probably stored as raw bytes).
+    /// Use <see cref="GetBytesAsync"/> to read binary values.
+    /// </exception>
     public async Task<string?> GetAsync(string key, CancellationToken cancellationToken = default)
+    {
+        var value = await GetByteStringAsync(key, cancellationToken);
+        return value == null ? null : StrictUtf8.GetString(value.Span);
+    }
+
+    /// <summary>
+    /// Gets a value from the cache as raw bytes.
+    /// </summary>
+    /// <param name="key">The key to look up</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The value if found (an empty array for an empty value), null if not found or expired</returns>
+    public async Task<byte[]?> GetBytesAsync(string key, CancellationToken cancellationToken = default)
+    {
+        var value = await GetByteStringAsync(key, cancellationToken);
+        return value?.ToByteArray();
+    }
+
+    /// <summary>
+    /// Gets a value as the protobuf <see cref="ByteString"/> it arrived in, so callers in
+    /// this assembly can read it as a span without copying.
+    /// </summary>
+    internal async Task<ByteString?> GetByteStringAsync(string key, CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrEmpty(key);
 
         var response = await _grpcClient.GetAsync(
-            new Proto.GetRequest { Key = key }, 
+            new Proto.GetRequest { Key = key },
             cancellationToken: cancellationToken);
 
         return response.HasValue ? response.Value : null;
@@ -136,9 +167,57 @@ public sealed class MemorizeClient : IDisposable, IAsyncDisposable
     /// <exception cref="StorageFullException">Thrown when the server's storage capacity is exceeded.</exception>
     public async Task SetAsync(string key, string value, ulong ttlSeconds, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(value);
+
+        // Strings are stored as UTF-8
+        await SetByteStringAsync(key, ByteString.CopyFromUtf8(value), ttlSeconds, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sets a raw byte value in the cache with the default TTL.
+    /// </summary>
+    /// <param name="key">The key</param>
+    /// <param name="value">The bytes to store</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <exception cref="StorageFullException">Thrown when the server's storage capacity is exceeded.</exception>
+    public Task SetBytesAsync(string key, ReadOnlyMemory<byte> value, CancellationToken cancellationToken = default)
+    {
+        return SetBytesAsync(key, value, _options.DefaultTtlSeconds, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sets a raw byte value in the cache with a specific TTL.
+    /// </summary>
+    /// <param name="key">The key</param>
+    /// <param name="value">The bytes to store (copied, so the buffer can be reused once this returns)</param>
+    /// <param name="ttlSeconds">Time-to-live in seconds (0 = never expire)</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <exception cref="StorageFullException">Thrown when the server's storage capacity is exceeded.</exception>
+    public Task SetBytesAsync(string key, ReadOnlyMemory<byte> value, ulong ttlSeconds, CancellationToken cancellationToken = default)
+    {
+        return SetByteStringAsync(key, ByteString.CopyFrom(value.Span), ttlSeconds, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sets a raw byte value in the cache with a specific TTL.
+    /// </summary>
+    /// <param name="key">The key</param>
+    /// <param name="value">The bytes to store</param>
+    /// <param name="ttl">Time-to-live duration</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <exception cref="StorageFullException">Thrown when the server's storage capacity is exceeded.</exception>
+    public Task SetBytesAsync(string key, ReadOnlyMemory<byte> value, TimeSpan ttl, CancellationToken cancellationToken = default)
+    {
+        return SetBytesAsync(key, value, (ulong)ttl.TotalSeconds, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends a set request for a value already wrapped as a protobuf <see cref="ByteString"/>.
+    /// </summary>
+    internal async Task SetByteStringAsync(string key, ByteString value, ulong ttlSeconds, CancellationToken cancellationToken)
+    {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrEmpty(key);
-        ArgumentNullException.ThrowIfNull(value);
 
         try
         {

@@ -49,6 +49,20 @@ impl std::fmt::Display for TruncatedKey<'_> {
     }
 }
 
+/// TTL formatting for log output, deferred like `TruncatedKey` so nothing
+/// is allocated unless the log line is actually written.
+struct Ttl(u64);
+
+impl std::fmt::Display for Ttl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 == 0 {
+            f.write_str("never")
+        } else {
+            write!(f, "{}s", self.0)
+        }
+    }
+}
+
 /// Validates that a key is within size limits
 fn validate_key(key: &str) -> Result<(), Status> {
     if key.is_empty() {
@@ -64,7 +78,7 @@ fn validate_key(key: &str) -> Result<(), Status> {
 }
 
 /// Validates that a value is within size limits
-fn validate_value(value: &str) -> Result<(), Status> {
+fn validate_value(value: &[u8]) -> Result<(), Status> {
     if value.len() > MAX_VALUE_LENGTH {
         return Err(Status::invalid_argument(format!(
             "Value exceeds maximum length of {} bytes",
@@ -99,19 +113,20 @@ impl Memorize for MemorizeService {
         validate_key(key)?;
         tracing::debug!("GET {}", TruncatedKey(key));
 
-        let value = self.store.get(key).map(|v| v.to_string());
+        // The response shares the stored buffer, so nothing is copied until it is written out
+        let value = self.store.get(key);
         Ok(Response::new(GetResponse { value }))
     }
 
     async fn set(&self, request: Request<SetRequest>) -> Result<Response<SetResponse>, Status> {
-        let req = request.get_ref();
+        // Take ownership so the key and value move into the store without being copied
+        let req = request.into_inner();
         validate_key(&req.key)?;
         validate_value(&req.value)?;
-        
-        let ttl_display = if req.ttl_seconds == 0 { "never".to_string() } else { format!("{}s", req.ttl_seconds) };
-        tracing::debug!("SET {} (ttl: {})", TruncatedKey(&req.key), ttl_display);
 
-        match self.store.set(&req.key, &req.value, req.ttl_seconds) {
+        tracing::debug!("SET {} (ttl: {})", TruncatedKey(&req.key), Ttl(req.ttl_seconds));
+
+        match self.store.set(req.key, req.value, req.ttl_seconds) {
             Ok(()) => Ok(Response::new(SetResponse { success: true })),
             Err(SetError::StorageFull { current_bytes, max_bytes }) => {
                 tracing::warn!(
@@ -225,7 +240,7 @@ impl Memorize for MemorizeService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memorize_core::StoreConfig;
+    use memorize_core::{EvictionPolicy, StoreConfig, ENTRY_OVERHEAD};
     use std::time::Duration;
 
     /// Creates a test store configuration with a long cleanup interval.
@@ -267,7 +282,7 @@ mod tests {
     #[test]
     fn test_validate_value_too_long() {
         let long_value = "x".repeat(MAX_VALUE_LENGTH + 1);
-        let result = validate_value(&long_value);
+        let result = validate_value(long_value.as_bytes());
         assert!(result.is_err());
         let status = result.unwrap_err();
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
@@ -277,7 +292,7 @@ mod tests {
     #[test]
     fn test_validate_value_at_limit() {
         let value_at_limit = "x".repeat(MAX_VALUE_LENGTH);
-        let result = validate_value(&value_at_limit);
+        let result = validate_value(value_at_limit.as_bytes());
         assert!(result.is_ok());
     }
 
@@ -319,6 +334,107 @@ mod tests {
         // floor_char_boundary(16) should land on byte 15 (start of 6th char)
         // so it truncates to the first 5 CJK chars (15 bytes)
         assert_eq!(truncated, "\u{4e16}\u{754c}\u{4f60}\u{597d}\u{6d4b}...");
+    }
+
+    #[test]
+    fn test_ttl_display() {
+        assert_eq!(Ttl(0).to_string(), "never");
+        assert_eq!(Ttl(60).to_string(), "60s");
+    }
+
+    fn set_request(key: &str, value: &str) -> Request<SetRequest> {
+        Request::new(SetRequest {
+            key: key.to_string(),
+            value: value.as_bytes().to_vec(),
+            ttl_seconds: 60,
+        })
+    }
+
+    #[tokio::test]
+    async fn test_set_and_get_round_trip() {
+        let service = MemorizeService::new(create_test_store(), false);
+
+        let response = service.set(set_request("key", "value")).await.unwrap();
+        assert!(response.into_inner().success);
+
+        let request = Request::new(GetRequest { key: "key".to_string() });
+        let response = service.get(request).await.unwrap();
+        assert_eq!(response.into_inner().value.as_deref(), Some(&b"value"[..]));
+    }
+
+    #[tokio::test]
+    async fn test_binary_value_round_trip() {
+        let service = MemorizeService::new(create_test_store(), false);
+        // Not valid UTF-8, which a `string` field would have rejected
+        let value: Vec<u8> = vec![0xff, 0xfe, 0x00, 0x80, b'a'];
+
+        let request = Request::new(SetRequest {
+            key: "binary".to_string(),
+            value: value.clone(),
+            ttl_seconds: 60,
+        });
+        service.set(request).await.unwrap();
+
+        let request = Request::new(GetRequest { key: "binary".to_string() });
+        let response = service.get(request).await.unwrap();
+        assert_eq!(response.into_inner().value.as_deref(), Some(value.as_slice()));
+    }
+
+    #[tokio::test]
+    async fn test_get_response_shares_stored_buffer() {
+        let store = create_test_store();
+        let service = MemorizeService::new(store.clone(), false);
+        service.set(set_request("key", "value")).await.unwrap();
+
+        let request = Request::new(GetRequest { key: "key".to_string() });
+        let response = service.get(request).await.unwrap().into_inner();
+
+        // Same buffer as the store holds, so the value wasn't copied
+        assert_eq!(response.value.unwrap().as_ptr(), store.get("key").unwrap().as_ptr());
+    }
+
+    #[tokio::test]
+    async fn test_get_missing_key_has_no_value() {
+        let service = MemorizeService::new(create_test_store(), false);
+
+        let request = Request::new(GetRequest { key: "missing".to_string() });
+        let response = service.get(request).await.unwrap();
+        assert_eq!(response.into_inner().value, None);
+    }
+
+    #[tokio::test]
+    async fn test_set_when_full_without_eviction_is_resource_exhausted() {
+        let entry = "k0".len() + "value".len() + ENTRY_OVERHEAD;
+        let config = StoreConfig::default()
+            .with_max_storage_bytes(entry * 2)
+            .with_eviction_policy(EvictionPolicy::NoEviction)
+            .with_cleanup_interval(Duration::from_secs(3600));
+        let service = MemorizeService::new(Store::with_config(config), false);
+
+        service.set(set_request("k0", "value")).await.unwrap();
+        service.set(set_request("k1", "value")).await.unwrap();
+
+        let status = service.set(set_request("k2", "value")).await.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+    }
+
+    #[tokio::test]
+    async fn test_set_when_full_with_lru_evicts() {
+        let entry = "k0".len() + "value".len() + ENTRY_OVERHEAD;
+        let config = StoreConfig::default()
+            .with_max_storage_bytes(entry * 2)
+            .with_eviction_policy(EvictionPolicy::Lru)
+            .with_cleanup_interval(Duration::from_secs(3600));
+        let store = Store::with_config(config);
+        let service = MemorizeService::new(store.clone(), false);
+
+        service.set(set_request("k0", "value")).await.unwrap();
+        service.set(set_request("k1", "value")).await.unwrap();
+        service.set(set_request("k2", "value")).await.unwrap();
+
+        assert_eq!(store.len(), 2);
+        assert!(store.contains_key("k2"));
+        assert!(store.size_bytes() <= entry * 2);
     }
 
     #[tokio::test]

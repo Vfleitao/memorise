@@ -1,4 +1,41 @@
+use std::str::FromStr;
 use std::time::Duration;
+
+/// What the store does when a write would exceed the storage limit
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EvictionPolicy {
+    /// Evict entries to make room: expired entries first, then the least
+    /// recently used ones (approximated by sampling, like Redis' `allkeys-lru`)
+    #[default]
+    Lru,
+    /// Reject the write with `SetError::StorageFull`
+    NoEviction,
+}
+
+impl FromStr for EvictionPolicy {
+    type Err = String;
+
+    /// Parses `lru` or `noeviction` (case-insensitive)
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "lru" => Ok(Self::Lru),
+            "noeviction" => Ok(Self::NoEviction),
+            other => Err(format!(
+                "unknown eviction policy '{}' (expected 'lru' or 'noeviction')",
+                other
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for EvictionPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Lru => f.write_str("lru"),
+            Self::NoEviction => f.write_str("noeviction"),
+        }
+    }
+}
 
 /// Configuration for the store
 /// 
@@ -18,6 +55,8 @@ pub struct StoreConfig {
     pub cleanup_interval: Duration,
     /// Maximum storage size in bytes (default: 100MB, 0 = unlimited)
     pub max_storage_bytes: usize,
+    /// What to do when the storage limit is reached (default: LRU eviction)
+    pub eviction_policy: EvictionPolicy,
 }
 
 impl Default for StoreConfig {
@@ -25,6 +64,7 @@ impl Default for StoreConfig {
         Self {
             cleanup_interval: Duration::from_secs(60),
             max_storage_bytes: 100 * 1024 * 1024, // 100MB default
+            eviction_policy: EvictionPolicy::Lru,
         }
     }
 }
@@ -93,6 +133,22 @@ impl StoreConfig {
         self.max_storage_bytes = bytes;
         self
     }
+
+    /// Sets what happens when the storage limit is reached
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use memorize_core::{EvictionPolicy, StoreConfig};
+    ///
+    /// // Reject writes instead of evicting when full
+    /// let config = StoreConfig::default()
+    ///     .with_eviction_policy(EvictionPolicy::NoEviction);
+    /// ```
+    pub fn with_eviction_policy(mut self, policy: EvictionPolicy) -> Self {
+        self.eviction_policy = policy;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -104,6 +160,7 @@ mod tests {
         let config = StoreConfig::default();
         assert_eq!(config.cleanup_interval, Duration::from_secs(60));
         assert_eq!(config.max_storage_bytes, 100 * 1024 * 1024); // 100MB
+        assert_eq!(config.eviction_policy, EvictionPolicy::Lru);
     }
 
     #[test]
@@ -132,5 +189,22 @@ mod tests {
     fn test_unlimited_storage() {
         let config = StoreConfig::default().with_max_storage_mb(0);
         assert_eq!(config.max_storage_bytes, 0);
+    }
+
+    #[test]
+    fn test_eviction_policy_parsing() {
+        assert_eq!("lru".parse::<EvictionPolicy>(), Ok(EvictionPolicy::Lru));
+        assert_eq!(" LRU ".parse::<EvictionPolicy>(), Ok(EvictionPolicy::Lru));
+        assert_eq!("noeviction".parse::<EvictionPolicy>(), Ok(EvictionPolicy::NoEviction));
+        assert_eq!("NoEviction".parse::<EvictionPolicy>(), Ok(EvictionPolicy::NoEviction));
+        assert!("random".parse::<EvictionPolicy>().is_err());
+        assert!("".parse::<EvictionPolicy>().is_err());
+    }
+
+    #[test]
+    fn test_eviction_policy_display_round_trips() {
+        for policy in [EvictionPolicy::Lru, EvictionPolicy::NoEviction] {
+            assert_eq!(policy.to_string().parse::<EvictionPolicy>(), Ok(policy));
+        }
     }
 }

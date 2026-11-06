@@ -61,9 +61,26 @@ using var cache = new MemorizeClient(options);
 using var cache = new MemorizeClient(MemorizeClientOptions.FromEnvironment());
 ```
 
+## Binary Values
+
+Values are stored as bytes. The string methods store and read UTF-8, and the byte methods
+take binary payloads (protobuf, MessagePack, compressed data, etc.) as they are:
+
+```csharp
+// Store and read raw bytes
+await cache.SetBytesAsync("thumbnail:1", imageBytes, ttlSeconds: 300);
+byte[]? image = await cache.GetBytesAsync("thumbnail:1");
+
+// Strings and bytes share the same storage
+await cache.SetAsync("greeting", "héllo");
+byte[]? utf8 = await cache.GetBytesAsync("greeting"); // the UTF-8 bytes of "héllo"
+```
+
+`GetAsync` throws a `DecoderFallbackException` if a value isn't valid UTF-8; read binary values with `GetBytesAsync`.
+
 ## JSON Serialization
 
-Extension methods for automatic JSON serialization:
+Extension methods for automatic JSON serialization (stored as UTF-8 JSON bytes):
 
 ```csharp
 using Memorize.Client;
@@ -178,7 +195,7 @@ catch (RpcException ex) when (ex.StatusCode == StatusCode.Unauthenticated)
 
 ### Storage Full Exception
 
-When the server has reached its configured maximum storage limit (`MEMORIZE_MAX_STORAGE_MB`), `SetAsync` will throw a `StorageFullException`:
+By default the server evicts entries to make room when it reaches its storage limit (`MEMORIZE_MAX_STORAGE_MB`), so `SetAsync` / `SetBytesAsync` only throw a `StorageFullException` when the server runs with `MEMORIZE_EVICTION_POLICY=noeviction`, or when a single value is larger than the whole limit:
 
 ```csharp
 try

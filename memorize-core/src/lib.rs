@@ -7,7 +7,8 @@
 //! - Thread-safe storage using `DashMap` (lock-free concurrent access)
 //! - Automatic expiration on read (lazy cleanup)
 //! - Background cleanup task for each store instance
-//! - All data stored as strings
+//! - Storage limit with sampled LRU eviction (or rejection) when full
+//! - Values are arbitrary bytes (`bytes::Bytes`); reads share the stored buffer instead of copying
 //!
 //! ## TTL Semantics
 //!
@@ -49,7 +50,7 @@
 //!
 //!     // Retrieve the value
 //!     if let Some(value) = store.get("user:123") {
-//!         println!("User: {}", value);
+//!         println!("User: {}", String::from_utf8_lossy(&value));
 //!     }
 //!
 //!     // Delete a key
@@ -64,9 +65,9 @@ mod config;
 mod entry;
 mod store;
 
-pub use config::StoreConfig;
+pub use config::{EvictionPolicy, StoreConfig};
 pub use entry::Entry;
-pub use store::{SetError, Store};
+pub use store::{SetError, Store, ENTRY_OVERHEAD};
 
 // Re-export search constants for use by server layer
 pub use store::DEFAULT_SEARCH_LIMIT;

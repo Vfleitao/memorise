@@ -40,6 +40,7 @@ async fn main() -> Result<()> {
 
     // Run all tests
     test_basic_operations().await?;
+    test_binary_values().await?;
     test_delete_all().await?;
     test_keys_and_contains().await?;
     test_search_keys().await?;
@@ -90,6 +91,51 @@ async fn test_basic_operations() -> Result<()> {
     tracing::info!("   GET {} → None (as expected)", key);
 
     tracing::info!("   ✓ Basic operations work correctly");
+    Ok(())
+}
+
+/// Test raw byte values and how they interoperate with string values
+async fn test_binary_values() -> Result<()> {
+    tracing::info!("Test: Binary Values");
+
+    let client = create_client().await?;
+
+    // Every byte value, including sequences that aren't valid UTF-8
+    let key = format!("binary-test-{}", uuid::Uuid::new_v4());
+    let value: Vec<u8> = (0..=255u8).collect();
+    client.set_bytes(&key, value.clone(), Some(60)).await?;
+    let result = client.get_bytes(&key).await?;
+    assert_eq!(result.as_deref(), Some(value.as_slice()), "Bytes should round trip unchanged");
+    tracing::info!("   SET/GET {} bytes round trip", value.len());
+
+    // Reading non-UTF-8 bytes as a string is an error, not a lossy conversion
+    let result = client.get(&key).await;
+    assert!(
+        matches!(result, Err(memorize_client::Error::InvalidUtf8(_))),
+        "get() on non-UTF-8 bytes should fail with InvalidUtf8"
+    );
+    tracing::info!("   get() on non-UTF-8 value → InvalidUtf8 (as expected)");
+
+    // Strings are stored as UTF-8, so they read back the same either way
+    let text_key = format!("text-test-{}", uuid::Uuid::new_v4());
+    let text = "héllo wörld 🌍";
+    client.set(&text_key, text, Some(60)).await?;
+    assert_eq!(client.get_bytes(&text_key).await?.as_deref(), Some(text.as_bytes()));
+    client.set_bytes(&text_key, text.as_bytes(), Some(60)).await?;
+    assert_eq!(client.get(&text_key).await?.as_deref(), Some(text));
+    tracing::info!("   String and byte APIs interoperate via UTF-8");
+
+    // An empty byte value is stored and returned, not treated as missing
+    let empty_key = format!("empty-test-{}", uuid::Uuid::new_v4());
+    client.set_bytes(&empty_key, Vec::new(), Some(60)).await?;
+    assert_eq!(client.get_bytes(&empty_key).await?, Some(Vec::new()));
+    assert_eq!(client.get_bytes(format!("missing-{}", uuid::Uuid::new_v4())).await?, None);
+
+    client.delete(&key).await?;
+    client.delete(&text_key).await?;
+    client.delete(&empty_key).await?;
+
+    tracing::info!("   ✓ Binary values work correctly");
     Ok(())
 }
 
