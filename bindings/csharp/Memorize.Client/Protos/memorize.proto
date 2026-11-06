@@ -33,12 +33,12 @@ message GetRequest {
 }
 
 message GetResponse {
-  optional string value = 1;  // None if key doesn't exist or expired
+  optional bytes value = 1;  // None if key doesn't exist or expired. Arbitrary bytes (UTF-8 text for string values)
 }
 
 message SetRequest {
   string key = 1;
-  string value = 2;
+  bytes value = 2;            // Arbitrary bytes (UTF-8 text for string values)
   uint64 ttl_seconds = 3;  // Time-to-live in seconds. 0 = never expire (implemented as ~100 years)
 }
 

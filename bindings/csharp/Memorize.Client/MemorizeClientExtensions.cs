@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Google.Protobuf;
 
 namespace Memorize.Client;
 
@@ -28,10 +29,11 @@ public static class MemorizeClientExtensions
         JsonSerializerOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        var json = await client.GetAsync(key, cancellationToken);
+        // Deserialize straight from the UTF-8 bytes, skipping a string conversion
+        var json = await client.GetByteStringAsync(key, cancellationToken);
         if (json == null) return default;
 
-        return JsonSerializer.Deserialize<T>(json, options ?? DefaultJsonOptions);
+        return JsonSerializer.Deserialize<T>(json.Span, options ?? DefaultJsonOptions);
     }
 
     /// <summary>
@@ -52,8 +54,10 @@ public static class MemorizeClientExtensions
         JsonSerializerOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        var json = JsonSerializer.Serialize(value, options ?? DefaultJsonOptions);
-        await client.SetAsync(key, json, ttlSeconds, cancellationToken);
+        // Serialize straight to UTF-8 bytes. The array is never modified after this,
+        // so wrapping it without a copy is safe.
+        var json = JsonSerializer.SerializeToUtf8Bytes(value, options ?? DefaultJsonOptions);
+        await client.SetByteStringAsync(key, UnsafeByteOperations.UnsafeWrap(json), ttlSeconds, cancellationToken);
     }
 
     /// <summary>

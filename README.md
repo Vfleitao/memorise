@@ -180,7 +180,8 @@ docker-compose up -d
 | `MEMORIZE_HOST` | `0.0.0.0` | Host address to bind |
 | `MEMORIZE_PORT` | `50051` | gRPC port |
 | `MEMORIZE_CLEANUP_INTERVAL` | `60` | Seconds between TTL cleanup runs |
-| `MEMORIZE_MAX_STORAGE_MB` | `100` | Maximum storage size in MB (0 = unlimited) |
+| `MEMORIZE_MAX_STORAGE_MB` | `100` | Maximum storage size in MB (0 = unlimited). Counts key and value bytes plus a small fixed overhead per entry |
+| `MEMORIZE_EVICTION_POLICY` | `lru` | When storage is full: `lru` evicts expired entries first, then the least recently read (sampled, like Redis' `allkeys-lru`); `noeviction` rejects writes with `RESOURCE_EXHAUSTED` |
 | `MEMORIZE_API_KEY` | *(none)* | API key for authentication (disabled if not set) |
 
 ### Building from Source

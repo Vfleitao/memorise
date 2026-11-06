@@ -2,7 +2,7 @@ mod auth;
 mod service;
 
 use auth::auth_interceptor;
-use memorize_core::{Store, StoreConfig};
+use memorize_core::{EvictionPolicy, Store, StoreConfig};
 use memorize_proto::memorize_server::MemorizeServer;
 use service::MemorizeService;
 use std::time::Duration;
@@ -31,6 +31,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "100".to_string())
         .parse()
         .unwrap_or(100);
+    let eviction_policy: EvictionPolicy = match std::env::var("MEMORIZE_EVICTION_POLICY") {
+        Ok(value) => value.parse().unwrap_or_else(|err| {
+            tracing::warn!("MEMORIZE_EVICTION_POLICY: {} - using '{}'", err, EvictionPolicy::default());
+            EvictionPolicy::default()
+        }),
+        Err(_) => EvictionPolicy::default(),
+    };
     let api_key = std::env::var("MEMORIZE_API_KEY").ok();
 
     let addr = format!("{}:{}", host, port).parse()?;
@@ -38,7 +45,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create the store with configuration
     let config = StoreConfig::default()
         .with_cleanup_interval(Duration::from_secs(cleanup_interval))
-        .with_max_storage_mb(max_storage_mb);
+        .with_max_storage_mb(max_storage_mb)
+        .with_eviction_policy(eviction_policy);
     let store = Store::with_config(config);
 
     let auth_enabled = api_key.is_some();
@@ -50,6 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("   Max storage: unlimited");
     } else {
         tracing::info!("   Max storage: {} MB", max_storage_mb);
+        tracing::info!("   Eviction policy: {}", eviction_policy);
     }
     if api_key.is_some() {
         tracing::info!("   Authentication: enabled (API key required)");

@@ -200,6 +200,39 @@ impl MemorizeClient {
         value: impl Into<String>,
         ttl_seconds: Option<u64>,
     ) -> Result<(), Error> {
+        // Strings are stored as their UTF-8 bytes (no copy)
+        self.set_bytes(key, value.into().into_bytes(), ttl_seconds).await
+    }
+
+    /// Store raw bytes in the cache.
+    ///
+    /// Use this for binary payloads (protobuf, MessagePack, compressed data, etc.).
+    /// Values stored with `set` can also be read back with `get_bytes`, as UTF-8.
+    ///
+    /// # Arguments
+    /// * `key` - The cache key
+    /// * `value` - The bytes to store
+    /// * `ttl_seconds` - Optional time-to-live in seconds. If None or Some(0), the entry never expires.
+    ///
+    /// # Errors
+    /// * `Error::StorageFull` - Server storage capacity has been exceeded
+    /// * `Error::Grpc` - Other gRPC errors (auth failure, invalid arguments, etc.)
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use memorize_client::MemorizeClient;
+    /// # async fn example() -> Result<(), memorize_client::Error> {
+    /// # let client = MemorizeClient::connect("http://localhost:50051").await?;
+    /// client.set_bytes("thumbnail:1", vec![0x89, 0x50, 0x4e, 0x47], Some(300)).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn set_bytes(
+        &self,
+        key: impl Into<String>,
+        value: impl Into<Vec<u8>>,
+        ttl_seconds: Option<u64>,
+    ) -> Result<(), Error> {
         let mut client = self.inner.clone();
         client
             .set(SetRequest {
@@ -213,12 +246,15 @@ impl MemorizeClient {
         Ok(())
     }
 
-    /// Retrieve a value from the cache.
+    /// Retrieve a value from the cache as a string.
     ///
     /// Returns `None` if the key doesn't exist or has expired.
     ///
     /// # Arguments
     /// * `key` - The cache key to look up
+    ///
+    /// # Errors
+    /// * `Error::InvalidUtf8` - The value isn't valid UTF-8 (read it with `get_bytes` instead)
     ///
     /// # Example
     /// ```rust,no_run
@@ -234,18 +270,41 @@ impl MemorizeClient {
     /// # }
     /// ```
     pub async fn get(&self, key: impl Into<String>) -> Result<Option<String>, Error> {
+        match self.get_bytes(key).await? {
+            // An empty value has always been reported as not found by this method
+            Some(bytes) if !bytes.is_empty() => Ok(Some(String::from_utf8(bytes)?)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Retrieve a value from the cache as raw bytes.
+    ///
+    /// Returns `None` if the key doesn't exist or has expired. Unlike `get`, an
+    /// empty value is returned as `Some` with no bytes.
+    ///
+    /// # Arguments
+    /// * `key` - The cache key to look up
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use memorize_client::MemorizeClient;
+    /// # async fn example() -> Result<(), memorize_client::Error> {
+    /// # let client = MemorizeClient::connect("http://localhost:50051").await?;
+    /// if let Some(bytes) = client.get_bytes("thumbnail:1").await? {
+    ///     println!("Found {} bytes", bytes.len());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_bytes(&self, key: impl Into<String>) -> Result<Option<Vec<u8>>, Error> {
         let mut client = self.inner.clone();
         let response = client
             .get(GetRequest { key: key.into() })
             .await
             .map_err(Error::from)?;
 
-        let inner = response.into_inner();
         // Handle optional field - None means key not found
-        match inner.value {
-            Some(v) if !v.is_empty() => Ok(Some(v)),
-            _ => Ok(None),
-        }
+        Ok(response.into_inner().value)
     }
 
     /// Delete a key from the cache.
@@ -454,8 +513,9 @@ impl MemorizeClient {
         value: &T,
         ttl_seconds: Option<u64>,
     ) -> Result<(), Error> {
-        let json = serde_json::to_string(value).map_err(Error::Serialization)?;
-        self.set(key, json, ttl_seconds).await
+        // Serialize straight to bytes, skipping a round trip through String
+        let json = serde_json::to_vec(value).map_err(Error::Serialization)?;
+        self.set_bytes(key, json, ttl_seconds).await
     }
 
     /// Retrieve and deserialize a JSON value from the cache.
@@ -481,12 +541,13 @@ impl MemorizeClient {
         &self,
         key: impl Into<String>,
     ) -> Result<Option<T>, Error> {
-        match self.get(key).await? {
-            Some(json) => {
-                let value = serde_json::from_str(&json).map_err(Error::Deserialization)?;
+        // Matches `get`: an empty value counts as not found
+        match self.get_bytes(key).await? {
+            Some(json) if !json.is_empty() => {
+                let value = serde_json::from_slice(&json).map_err(Error::Deserialization)?;
                 Ok(Some(value))
             }
-            None => Ok(None),
+            _ => Ok(None),
         }
     }
 }

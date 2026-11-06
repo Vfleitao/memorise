@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-dashmap = "6"
+bytes = "1"
+dashmap = { version = "6", features = ["raw-api"] }
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
 
 [dev-dependencies]
